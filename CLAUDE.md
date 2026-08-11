@@ -77,7 +77,7 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
 
 | Command | Does | Needs |
 | --- | --- | --- |
-| `schedule` | queue a Markdown post (body from `--file` or stdin) to publish at `--at`; Markdown→Telethon entities via `_md2entities`; prints confirmation, no DB write | **post rights** + session |
+| `schedule` | queue a Markdown post (body from `--file` or stdin) to publish at `--at`; Markdown→Telethon entities via `_md2entities`; `--photo` (repeatable, ≤10 → album) attaches images, body becomes the caption (≤1024 UTF-16 units, may be empty); prints confirmation, no DB write | **post rights** + session |
 | `reschedule` | move scheduled post `--id` to a new `--at` (body unchanged); re-applies the 1h floor | **post rights** + session |
 | `edit` | replace scheduled post `--id`'s body (from `--file` or stdin, time unchanged); **no** floor check | **post rights** + session |
 

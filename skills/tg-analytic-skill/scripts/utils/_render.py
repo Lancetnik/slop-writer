@@ -269,6 +269,10 @@ def summarize_schedule(channel: str, item: dict, action: str = "Scheduled") -> N
     )
     if item.get("entities") is not None:
         print(f"- Formatting entities: {item['entities']}")
+    if item.get("photos"):
+        n = item["photos"]
+        kind = "album of " if n > 1 else ""
+        print(f"- Photos: {kind}{n} — the body below is the caption")
     print("\n## Body preview\n")
     body = (item.get("text") or "").strip()
     if body:

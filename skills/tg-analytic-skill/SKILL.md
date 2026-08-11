@@ -2,7 +2,7 @@
 name: tg-analytic-skill
 description: >-
   Use this skill when the user wants to analyze a Telegram channel — scrape posts, comments, forwards, and per-post engagement over time, or pull subscriber growth/churn by source and views by hour of day from Telegram's stats API. Also scans the channel's discussion group (or any group the account is in): thread engagement, join/leave events, hourly activity.Covers content, engagement, audience dynamics, and posting performance.
-  Can also schedule, reschedule, and edit a future post to the channel (Markdown body rendered to Telegram formatting) — its write capabilities. Do not use for one-off reads of a single message, for private chats the logged-in account doesn't admin.
+  Can also schedule, reschedule, and edit a future post to the channel (Markdown body rendered to Telegram formatting, optionally with attached photos/an album) — its write capabilities. Do not use for one-off reads of a single message, for private chats the logged-in account doesn't admin.
   Runs the bundled tg_scrape.py / tg_publish.py / tg_query.py CLIs.
 compatibility: >-
   Requires Python >=3.10 with uv (PEP-723 inline deps install on
@@ -248,6 +248,11 @@ differ from the id a post gets once published, so nothing is persisted to the DB
 uv run <skill_dir>/scripts/tg_publish.py schedule --channel @name \
   --file post.md --at 2026-06-27T18:00:00+03:00
 
+# queue a post with photos (repeat --photo for an album, up to 10)
+uv run <skill_dir>/scripts/tg_publish.py schedule --channel @name \
+  --file post.md --photo cover.jpg --photo chart.png \
+  --at 2026-06-27T18:00:00+03:00
+
 # move an existing scheduled post to a new time (body unchanged)
 uv run <skill_dir>/scripts/tg_publish.py reschedule --channel @name \
   --id 182 --at 2026-06-28T19:00:00+03:00
@@ -269,6 +274,8 @@ EOF
 ```
 
 Markdown renders straight to Telegram formatting (no HTML step) — read [references/markup.md](references/markup.md) before writing the body.
+
+`--photo PATH` (repeatable) attaches images to a `schedule`d post; several photos publish as **one album**. The body then becomes the **caption**: capped at **1024 chars** (a text-only post gets 4096) and allowed to be empty (omit `--file` for a caption-less photo post). Only real photo files are accepted (`.jpg`/`.jpeg`/`.png`/`.webp`) — anything else would go out as a document, so convert first. `edit` rewrites the caption of an existing photo post (same 1024 cap) but cannot add or replace the photos themselves.
 
 `--at` must be **ISO-8601 with a UTC offset** (e.g. `...+03:00`); a naive time with no offset is rejected as ambiguous. The post must be scheduled **at least 1 hour ahead**, so an earlier `--at` exits 1.
 

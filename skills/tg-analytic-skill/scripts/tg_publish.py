@@ -14,9 +14,10 @@ is auditable at the file level (the read/scrape/query scripts never publish).
 See docs/adr/0003.
 
 Pipeline: Markdown --(_md2entities)--> plain text + Telethon MessageEntity list
---> client.send_message(schedule). Scheduling is an MTProto/user-client feature,
-so this rides the same Telethon session as the scrapers — the Bot API cannot
-schedule.
+--> client.send_message(schedule), or client.send_file(schedule) when --photo
+attaches images (the body becomes the caption; several photos form one album).
+Scheduling is an MTProto/user-client feature, so this rides the same Telethon
+session as the scrapers — the Bot API cannot schedule.
 """
 import asyncio
 import logging
@@ -58,6 +59,16 @@ UTC = timezone.utc
 # leash. The human owner can still edit this constant. See docs/adr/0003.
 MIN_LEAD = timedelta(hours=1)
 
+# Telegram caps a media caption at 1024 UTF-16 units (a text-only post gets
+# 4096). Checked client-side so the agent gets an actionable error instead of
+# a server-side MEDIA_CAPTION_TOO_LONG after the upload.
+CAPTION_LIMIT = 1024
+# A Telegram album (grouped media) holds at most 10 items.
+MAX_ALBUM = 10
+# Extensions Telegram accepts as *photos*. Anything else would silently go out
+# as a document attachment, so it's rejected instead.
+PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
 app = typer.Typer(help="Publish to a Telegram channel: schedule / reschedule / edit posts.")
 
 
@@ -67,15 +78,18 @@ def _main() -> None:
     CLI reads `tg_publish.py schedule ...` and stays open to future verbs."""
 
 
-def _read_body(path: str | None) -> str:
+def _read_body(path: str | None, *, optional: bool = False) -> str:
     """Read the Markdown body from a file, or from stdin when `path` is None/`-`.
 
     stdin keeps the agent from writing a temp file just to strip a draft's
     metainfo: it produces the clean body and pipes it via a quoted heredoc,
     which passes backticks/`$`/quotes verbatim (no shell escaping). The TTY
-    guard turns a bare interactive run into a clear message, not a silent hang."""
+    guard turns a bare interactive run into a clear message, not a silent hang
+    — except when the body is `optional` (a photo post may have no caption)."""
     if path in (None, "-"):
         if sys.stdin.isatty():
+            if optional:
+                return ""
             typer.echo(
                 "No --file given and stdin is a terminal. Pass --file PATH, or "
                 "pipe the body, e.g. `... --file - <<'EOF'`.",
@@ -90,14 +104,66 @@ def _read_body(path: str | None) -> str:
         raise typer.Exit(code=2) from None
 
 
-def _render_markdown(path: str | None) -> tuple[str, list]:
-    """Markdown from --file or stdin -> (plain text, Telethon entities)."""
-    text, entities = render_markdown(_read_body(path))
+def _render_markdown(path: str | None, *, allow_empty: bool = False) -> tuple[str, list]:
+    """Markdown from --file or stdin -> (plain text, Telethon entities).
+
+    `allow_empty` (photo posts): a missing/empty body is a caption-less post,
+    not an error."""
+    text, entities = render_markdown(_read_body(path, optional=allow_empty))
     if not text.strip():
+        if allow_empty:
+            return "", []
         src = "stdin" if path in (None, "-") else f"--file {path!r}"
         typer.echo(f"{src} renders to an empty post.", err=True)
         raise typer.Exit(code=2)
     return text, entities
+
+
+def _utf16_len(text: str) -> int:
+    """Length in UTF-16 code units — the unit Telegram's limits count in."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _check_photos(photos: list[str]) -> list[Path]:
+    """Validate --photo paths before touching Telegram: files exist, look like
+    photos, and fit a single album."""
+    if len(photos) > MAX_ALBUM:
+        typer.echo(
+            f"Got {len(photos)} photos; a Telegram album holds at most "
+            f"{MAX_ALBUM}.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    paths = []
+    for raw in photos:
+        path = Path(raw)
+        if not path.is_file():
+            typer.echo(f"--photo {raw!r}: file not found.", err=True)
+            raise typer.Exit(code=2)
+        if path.suffix.lower() not in PHOTO_EXTS:
+            typer.echo(
+                f"--photo {raw!r}: extension {path.suffix!r} is not a Telegram "
+                f"photo type ({', '.join(sorted(PHOTO_EXTS))}). Other files "
+                "would go out as document attachments — convert the image "
+                "first.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        paths.append(path)
+    return paths
+
+
+def _check_caption(text: str) -> None:
+    """Media captions are capped harder than text posts — fail before upload."""
+    n = _utf16_len(text)
+    if n > CAPTION_LIMIT:
+        typer.echo(
+            f"Body is {n} UTF-16 units, but a photo caption is capped at "
+            f"{CAPTION_LIMIT} (text-only posts get 4096). Shorten the body "
+            "or drop the photos.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
 
 def _parse_when(at: str) -> datetime:
@@ -142,15 +208,32 @@ async def schedule_post(
     entities: list,
     when: datetime,
     session_file: str,
+    photos: list[Path] | None = None,
 ) -> None:
     async with channel_session(session_file, channel) as (client, entity):
         log.info("authenticated, scheduling post to %s for %s", channel, when.isoformat())
-        msg = await client.send_message(
-            entity,
-            text,
-            formatting_entities=entities,
-            schedule=when,
-        )
+        if photos:
+            # parse_mode=None matters: with an *empty* entity list send_file
+            # falls back to Telethon's own Markdown parser, which would mangle
+            # literal */_/` in the caption. None disables that fallback;
+            # non-empty entities are used either way. Several photos become
+            # one album, with the caption on its first item.
+            sent = await client.send_file(
+                entity,
+                [str(p) for p in photos] if len(photos) > 1 else str(photos[0]),
+                caption=text,
+                formatting_entities=entities,
+                parse_mode=None,
+                schedule=when,
+            )
+            msg = sent[0] if isinstance(sent, list) else sent
+        else:
+            msg = await client.send_message(
+                entity,
+                text,
+                formatting_entities=entities,
+                schedule=when,
+            )
     summarize_schedule(
         channel,
         {
@@ -159,6 +242,7 @@ async def schedule_post(
             "requested": when.isoformat(),
             "text": text,
             "entities": len(entities),
+            "photos": len(photos) if photos else 0,
         },
     )
 
@@ -214,6 +298,10 @@ async def edit_post(
 ) -> None:
     async with channel_session(session_file, channel) as (client, entity):
         existing = await _get_scheduled(client, entity, msg_id)
+        # A media post's body is a *caption* with the tighter cap; only known
+        # after fetching the target, hence checked here and not in the command.
+        if existing.media is not None:
+            _check_caption(text)
         # Re-send the existing schedule date: it both keeps the post in the
         # scheduled queue and is the flag that tells Telegram this edit targets
         # the scheduled message (not a published one with the same id).
@@ -248,6 +336,14 @@ FileOpt = Annotated[
         "to read the body from stdin, e.g. `--file - <<'EOF' ... EOF`."
     ),
 ]
+PhotoOpt = Annotated[
+    list[str] | None,
+    typer.Option(
+        help="Path to an image to attach (.jpg/.jpeg/.png/.webp). Repeat for "
+        "an album, up to 10. The body becomes the caption (max 1024 chars, "
+        "may be empty)."
+    ),
+]
 AtOpt = Annotated[
     str,
     typer.Option(
@@ -267,17 +363,23 @@ def schedule(
     channel: ChannelOpt,
     at: AtOpt,
     file: FileOpt = None,
+    photo: PhotoOpt = None,
     session_file: SessionOpt = DEFAULT_SESSION,
 ) -> None:
     """Queue a Markdown post to publish at a future time.
 
-    Body is Markdown rendered straight to Telegram entities (_md2entities). The
+    Body is Markdown rendered straight to Telegram entities (_md2entities).
+    --photo attaches images: the body becomes the caption (capped at 1024 vs a
+    text post's 4096, and may be empty), several photos form one album. The
     post must be scheduled at least 1 hour ahead; scheduled posts are not
     persisted (their ids differ from published ids and carry no engagement)."""
     when = _parse_when(at)
-    text, entities = _render_markdown(file)
+    photos = _check_photos(photo) if photo else None
+    text, entities = _render_markdown(file, allow_empty=bool(photos))
+    if photos:
+        _check_caption(text)
     _require_session(session_file)
-    asyncio.run(schedule_post(channel, text, entities, when, session_file))
+    asyncio.run(schedule_post(channel, text, entities, when, session_file, photos))
 
 
 @app.command("reschedule")
