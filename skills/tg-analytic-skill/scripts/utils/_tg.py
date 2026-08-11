@@ -18,8 +18,8 @@ DEFAULT_SESSION_FILE = DATA_DIR / "session.session"
 DEFAULT_SESSION = str(DEFAULT_SESSION_FILE)
 
 # `login` lives in tg_scrape.py; point users there regardless of which script
-# tripped the missing-session check. Same directory as this module.
-_LOGIN_SCRIPT = Path(__file__).resolve().parent / "tg_scrape.py"
+# tripped the missing-session check. One level up from this utils package.
+_LOGIN_SCRIPT = Path(__file__).resolve().parent.parent / "tg_scrape.py"
 
 
 def _credentials() -> tuple[int, str, str]:
