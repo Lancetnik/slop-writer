@@ -192,36 +192,43 @@ async def get_public_forwards(
     client: TelegramClient, channel_entity, msg_id: int
 ) -> list[ForwardInfo]:
     result_list: list[ForwardInfo] = []
+    offset = ""
     try:
-        result = await client(
-            GetMessagePublicForwardsRequest(
-                channel=channel_entity,
-                msg_id=msg_id,
-                offset="",
-                limit=100,
+        # The API pages 100 forwards at a time; an empty next_offset ends
+        # the walk. A mid-walk error keeps the pages fetched so far.
+        while True:
+            result = await client(
+                GetMessagePublicForwardsRequest(
+                    channel=channel_entity,
+                    msg_id=msg_id,
+                    offset=offset,
+                    limit=100,
+                )
             )
-        )
-        for fwd in result.forwards:
-            if not isinstance(fwd, PublicForwardMessage):
-                continue
-            peer = fwd.message.peer_id
-            try:
-                entity = await client.get_entity(peer)
-                username = getattr(entity, "username", None)
-                ch_link = (
-                    f"https://t.me/{username}"
-                    if username
-                    else f"https://t.me/c/{peer.channel_id}"
-                )
-                result_list.append(
-                    ForwardInfo(
-                        msg_link=f"{ch_link}/{fwd.message.id}",
-                        channel_link=ch_link,
-                        peer=peer,
+            for fwd in result.forwards:
+                if not isinstance(fwd, PublicForwardMessage):
+                    continue
+                peer = fwd.message.peer_id
+                try:
+                    entity = await client.get_entity(peer)
+                    username = getattr(entity, "username", None)
+                    ch_link = (
+                        f"https://t.me/{username}"
+                        if username
+                        else f"https://t.me/c/{peer.channel_id}"
                     )
-                )
-            except Exception as e:
-                log.error("msg %d: failed to resolve forward peer (%s)", msg_id, e)
+                    result_list.append(
+                        ForwardInfo(
+                            msg_link=f"{ch_link}/{fwd.message.id}",
+                            channel_link=ch_link,
+                            peer=peer,
+                        )
+                    )
+                except Exception as e:
+                    log.error("msg %d: failed to resolve forward peer (%s)", msg_id, e)
+            offset = getattr(result, "next_offset", None) or ""
+            if not offset or not result.forwards:
+                break
         if result_list:
             log.debug("msg %d: %d public forward(s)", msg_id, len(result_list))
     except Exception as e:
