@@ -2,7 +2,7 @@
 
 Read this before writing SQL through `tg_query.py`. One SQLite file per channel — leading `@` is stripped from the filename. **There is no `channel` column anywhere** — the channel is implicit in which DB you opened. Don't `WHERE channel = ...`.
 
-The literal `CREATE TABLE` statements below restate the `SCHEMA` constant in `scripts/_common.py` (the source of truth) — every column the agent can SELECT, JOIN, or filter on appears there. Notes underneath each table cover only what the DDL can't convey (storage format, semantics, gotchas).
+The literal `CREATE` statements below restate the `SCHEMA` and `FTS_SCHEMA` constants in `scripts/utils/_common.py` (the source of truth) — every column the agent can SELECT, JOIN, or filter on appears there. Notes underneath each table cover only what the DDL can't convey (storage format, semantics, gotchas).
 
 ## Full schema at a glance
 
@@ -110,6 +110,50 @@ CREATE TABLE group_metrics (
     group_title  TEXT,
     members      INTEGER
 );
+
+CREATE VIRTUAL TABLE posts_fts USING fts5(
+    text,
+    content='posts',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER posts_fts_ai AFTER INSERT ON posts BEGIN
+    INSERT INTO posts_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER posts_fts_ad AFTER DELETE ON posts BEGIN
+    INSERT INTO posts_fts(posts_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+END;
+
+CREATE TRIGGER posts_fts_au AFTER UPDATE ON posts BEGIN
+    INSERT INTO posts_fts(posts_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+    INSERT INTO posts_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE VIRTUAL TABLE gm_fts USING fts5(
+    text,
+    content='group_messages',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER gm_fts_ai AFTER INSERT ON group_messages BEGIN
+    INSERT INTO gm_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER gm_fts_ad AFTER DELETE ON group_messages BEGIN
+    INSERT INTO gm_fts(gm_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+END;
+
+CREATE TRIGGER gm_fts_au AFTER UPDATE ON group_messages BEGIN
+    INSERT INTO gm_fts(gm_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+    INSERT INTO gm_fts(rowid, text) VALUES (new.id, new.text);
+END;
 ```
 
 Date/time columns are ISO-8601 strings throughout (`posts.date`, `posts.edit_date`, `public_channels.last_seen`, `public_shares.first_seen`, `post_metrics.scrape_date`, `group_messages.date`, `group_events.date`, `group_metrics.scrape_date`). Use SQLite's `date()`, `datetime()`, `strftime()` directly — no conversion needed.
@@ -375,6 +419,53 @@ CREATE TABLE group_metrics (
   group this DB's group_* rows came from.
 - `members` — participants_count at scan time; drift vs cumulative
   `joins - leaves` reveals event-log gaps.
+
+## Full-text search — `posts_fts`, `gm_fts`
+
+FTS5 indexes over `posts.text` and `group_messages.text`, kept in sync by
+triggers (DDL in the glance block). **`MATCH` is the canonical way to answer
+"where was X mentioned"** — prefer it over `LIKE` for any text search; it is
+ranked (`bm25()`) and indexed, `LIKE` is neither.
+
+**Always add a `*` prefix wildcard to content words.** The `unicode61`
+tokenizer does no stemming in any language, so `MATCH 'subscriber'` misses
+"subscribers". Search by word stem: `MATCH 'subscrib*'`.
+
+Canonical post search (`bm25()` is *lower = better*, so plain `ORDER BY`):
+
+```sql
+SELECT p.id, p.link, p.date,
+       snippet(posts_fts, 0, '>>', '<<', ' … ', 12) AS context
+FROM posts_fts
+JOIN posts p ON p.id = posts_fts.rowid
+WHERE posts_fts MATCH 'subscrib* OR follower*'
+ORDER BY bm25(posts_fts)
+LIMIT 20;
+```
+
+Canonical comment/group search — filter roots, they duplicate the channel
+post's text and would shadow the actual discussion:
+
+```sql
+SELECT gm.id, gm.thread_post_id, gm.author, gm.date,
+       snippet(gm_fts, 0, '>>', '<<', ' … ', 12) AS context
+FROM gm_fts
+JOIN group_messages gm ON gm.id = gm_fts.rowid
+WHERE gm_fts MATCH 'deadline*' AND gm.is_thread_root = 0
+ORDER BY bm25(gm_fts)
+LIMIT 20;
+```
+
+- Join back via `rowid`: `posts_fts.rowid = posts.id`,
+  `gm_fts.rowid = group_messages.id`.
+- Query syntax inside the MATCH string: implicit AND between words, plus
+  `OR`, `NOT`, `"exact phrase"`, `NEAR(a b, 5)`. Quote tokens containing
+  punctuation: `MATCH '"tg-scraper"'`.
+- `snippet(<table>, 0, ...)` — column index 0 is `text`, the only indexed
+  column.
+- `no such table: posts_fts` means the DB was written before the index
+  existed (any scrape/fetch/group run migrates it) or the SQLite build has
+  no FTS5 — fall back to `LIKE '%...%'` and say so.
 
 ## Common joins
 

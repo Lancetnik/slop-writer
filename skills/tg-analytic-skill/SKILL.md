@@ -299,6 +299,12 @@ LLM-generated SQL). Output is a Markdown table. `--limit N` caps rows (default
 100, `0` = unlimited). `--no-truncate` to see full cell content (post body,
 long comments). Use whenever the user asks for data not in the stdout summary.
 
+For text search ("where did I write about X", "what did commenters say about
+Y") use the FTS5 indexes — `posts_fts` / `gm_fts` with `MATCH 'stem*'` and
+`bm25()` ranking — not `LIKE` over `text`. The *Full-text search* section of
+references/schema.md has the canonical queries; always search by `stem*`
+prefix (no stemmer), and filter `is_thread_root = 0` on `gm_fts` hits.
+
 If a query fails with `no such column` / `no such table`, the error output
 lists every table with its actual columns — rewrite the query from that
 listing instead of guessing again.
@@ -335,6 +341,7 @@ After running a command, sanity-check the result before reporting:
 | `no followers graph available` / `no top-hours graph available` | Stats exist but the requested graph is empty | Report to user; no retry helps. |
 | New, empty `.tg-analytic/<handle>.db` appeared | Channel handle typo | Confirm the handle with the user; delete the empty DB before re-running. |
 | `... has no linked discussion group` | Channel has comments disabled / no group attached | Only `--group` mode is possible, and only for groups the account can read. |
+| `no such table: posts_fts` / `gm_fts` on a MATCH query | DB written before the search index existed, or SQLite build lacks FTS5 | Run any `scrape`/`fetch`/`group` command to migrate the DB; meanwhile fall back to `LIKE '%...%'`. |
 | `is the discussion group of a channel ... re-run with --channel` (warning, not an error) | `--group` used on an attached group | Re-run with `--channel <channel>` to get thread↔post linkage in the channel's DB. |
 
 Telethon may also surface `FloodWaitError` mid-scrape on very large channels — the script logs and continues per item where possible. If a run aborts, re-run with `--offset-id <last-seen-id>` to resume forward rather than restart.

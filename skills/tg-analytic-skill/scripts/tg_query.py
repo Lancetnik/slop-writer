@@ -62,9 +62,12 @@ def _schema_listing(conn: sqlite3.Connection) -> str:
     errors so a caller (typically an LLM) can fix its query in one retry instead
     of guessing names."""
     lines = ["Available tables/columns:"]
+    # The GLOB hides FTS5 shadow tables (posts_fts_data, posts_fts_idx, ...)
+    # while keeping the queryable posts_fts/gm_fts virtual tables listed.
     tables = conn.execute(
         "SELECT name FROM sqlite_master"
-        " WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        " WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        " AND name NOT GLOB '*_fts_*' ORDER BY name"
     ).fetchall()
     for (table,) in tables:
         # table_xinfo, not table_info: only the former lists generated columns

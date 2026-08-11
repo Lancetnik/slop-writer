@@ -2,8 +2,9 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""Guard against drift between SCHEMA (the source of truth, in _common.py)
-and the DDL that references/schema.md restates for the SQL-writing agent.
+"""Guard against drift between SCHEMA + FTS_SCHEMA (the source of truth,
+in _common.py) and the DDL that references/schema.md restates for the
+SQL-writing agent.
 
 Dev-only tooling: skill *users* never run this. It guards the source tree
 while the skill is being developed, so it lives outside the distributed
@@ -27,7 +28,7 @@ SKILL_SCRIPTS = (
     / "skills" / "tg-analytic-skill" / "scripts"
 )
 sys.path.insert(0, str(SKILL_SCRIPTS))
-from utils._common import SCHEMA  # noqa: E402
+from utils._common import FTS_SCHEMA, SCHEMA  # noqa: E402
 
 SCHEMA_MD = SKILL_SCRIPTS.parent / "references" / "schema.md"
 
@@ -38,12 +39,29 @@ def normalize(stmt: str) -> str:
     return " ".join(stmt.split()).rstrip(";").strip()
 
 
+def split_statements(sql: str) -> list[str]:
+    """Split on ';', except inside CREATE TRIGGER BEGIN...END bodies —
+    a trigger keeps its internal semicolons and stays one statement."""
+    out: list[str] = []
+    buf = ""
+    for frag in sql.split(";"):
+        buf = f"{buf};{frag}" if buf else frag
+        flat = " ".join(buf.upper().split())
+        if flat.startswith("CREATE TRIGGER") and not flat.endswith(" END"):
+            continue
+        out.append(buf)
+        buf = ""
+    if buf.strip():
+        out.append(buf)
+    return out
+
+
 def statements(sql: str) -> set[str]:
-    return {normalize(s) for s in sql.split(";") if normalize(s)}
+    return {normalize(s) for s in split_statements(sql) if normalize(s)}
 
 
 def main() -> int:
-    truth = statements(SCHEMA)
+    truth = statements(SCHEMA + FTS_SCHEMA)
 
     doc = SCHEMA_MD.read_text(encoding="utf-8")
     doc_sql = "\n".join(re.findall(r"```sql\n(.*?)```", doc, flags=re.DOTALL))

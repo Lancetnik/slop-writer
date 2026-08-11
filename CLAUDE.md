@@ -16,9 +16,9 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   - `scripts/utils/` — support **package** for the CLIs, imported as `utils.*`
     (e.g. `from utils._common import …`); resolves because `scripts/` is on
     `sys.path`. Modules import each other relatively (`from ._common import …`).
-    - `_common.py` — shared paths, the `SCHEMA` constant (**source of truth**
-      for the DB layout), and DB open helpers. Stdlib-only so `tg_query.py`
-      keeps its empty-dependencies property.
+    - `_common.py` — shared paths, the `SCHEMA` + `FTS_SCHEMA` constants
+      (**source of truth** for the DB layout), and DB open helpers.
+      Stdlib-only so `tg_query.py` keeps its empty-dependencies property.
     - `_tg.py` — Telethon session/credential plumbing (`_credentials`,
       `make_client`, `channel_session`, `_require_session`) shared by
       `tg_scrape.py` and `tg_publish.py`. Telethon-dependent, so kept out of
@@ -103,6 +103,12 @@ Scrape selection flags are mutually exclusive; default to `--latest N`
   these warnings are expected noise, not real errors.
 - Every command prints a Markdown summary to stdout designed to be pasted to the
   user as-is. When adding a command, follow that convention (`summarize_*`).
+- Full-text search (docs/adr/0004): `posts_fts`/`gm_fts` are FTS5
+  external-content indexes synced by `FTS_SCHEMA` triggers; `open_db` applies
+  `FTS_SCHEMA` best-effort (no FTS5 module → warning, search lost, scraping
+  fine) and backfills via `'rebuild'` only when a table was just created.
+  `MATCH 'stem*'` is the canonical text search (unicode61, no stemming);
+  `tg_query.py` hides the `*_fts_*` shadow tables from its error listing.
 - `group_messages` is the **only** comment store (docs/adr/0002 superseded
   the separate `post_comments` table): `scrape`/`fetch` replace each post's
   thread (`thread_post_id` = post id), `group` upserts its scan window.

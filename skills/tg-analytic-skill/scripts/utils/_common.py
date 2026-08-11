@@ -4,12 +4,13 @@ Part of the `utils` package; the CLIs import it as `from utils._common import �
 (`scripts/` is on sys.path), and siblings here import it relatively.
 Must stay stdlib-only so tg_query.py keeps its empty-dependencies property.
 
-The SCHEMA constant below is the single source of truth for the DB layout.
-references/schema.md restates it for the SQL-writing agent — run
-tools/check_schema_doc.py (dev-only, at the repo root) after editing
-either to catch drift.
+The SCHEMA and FTS_SCHEMA constants below are the single source of truth for
+the DB layout. references/schema.md restates them for the SQL-writing agent —
+run tools/check_schema_doc.py (dev-only, at the repo root) after editing
+either side to catch drift.
 """
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -128,6 +129,57 @@ CREATE TABLE IF NOT EXISTS group_metrics (
 );
 """
 
+# Full-text search over posts.text / group_messages.text (docs/adr/0004).
+# Kept out of SCHEMA so open_db can apply it best-effort: a SQLite build
+# without the FTS5 module loses search but keeps scraping. External-content
+# tables (no text duplication) stay in sync via triggers — safe because no
+# write path uses INSERT OR REPLACE, which would skip the delete trigger.
+FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
+    text,
+    content='posts',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS posts_fts_ai AFTER INSERT ON posts BEGIN
+    INSERT INTO posts_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS posts_fts_ad AFTER DELETE ON posts BEGIN
+    INSERT INTO posts_fts(posts_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS posts_fts_au AFTER UPDATE ON posts BEGIN
+    INSERT INTO posts_fts(posts_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+    INSERT INTO posts_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS gm_fts USING fts5(
+    text,
+    content='group_messages',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS gm_fts_ai AFTER INSERT ON group_messages BEGIN
+    INSERT INTO gm_fts(rowid, text) VALUES (new.id, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS gm_fts_ad AFTER DELETE ON group_messages BEGIN
+    INSERT INTO gm_fts(gm_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS gm_fts_au AFTER UPDATE ON group_messages BEGIN
+    INSERT INTO gm_fts(gm_fts, rowid, text)
+    VALUES ('delete', old.id, old.text);
+    INSERT INTO gm_fts(rowid, text) VALUES (new.id, new.text);
+END;
+"""
+
 
 def db_path_for(output_dir: Path, channel: str) -> Path:
     """One DB file per channel, e.g. .tg-analytic/fastnewsdev.db."""
@@ -145,10 +197,38 @@ def _drop_legacy_tables(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _ensure_fts(conn: sqlite3.Connection) -> None:
+    """Create the FTS5 search indexes; backfill them on first creation.
+
+    A freshly created external-content index over an already-populated table
+    starts empty and MATCH would silently return zero rows, so tables that
+    didn't exist before this call get a one-time 'rebuild'; the triggers keep
+    them current afterwards. On a SQLite build without the FTS5 module this
+    logs a warning and returns — search is lost, scraping still works."""
+    missing = [
+        t
+        for t in ("posts_fts", "gm_fts")
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = ?", (t,)
+        ).fetchone() is None
+    ]
+    try:
+        conn.executescript(FTS_SCHEMA)
+    except sqlite3.OperationalError as exc:
+        logging.getLogger(__name__).warning(
+            "full-text search disabled (%s) - this SQLite build has no FTS5",
+            exc,
+        )
+        return
+    for t in missing:
+        conn.execute(f"INSERT INTO {t}({t}) VALUES('rebuild')")
+
+
 def open_db(output_dir: Path, channel: str) -> sqlite3.Connection:
     output_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path_for(output_dir, channel))
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _ensure_fts(conn)
     _drop_legacy_tables(conn)
     return conn
