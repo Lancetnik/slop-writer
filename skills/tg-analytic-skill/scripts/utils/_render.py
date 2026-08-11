@@ -272,7 +272,11 @@ def summarize_schedule(channel: str, item: dict, action: str = "Scheduled") -> N
     if item.get("photos"):
         n = item["photos"]
         kind = "album of " if n > 1 else ""
-        print(f"- Photos: {kind}{n} — the body below is the caption")
+        pos = "above" if item.get("caption_above") else "below"
+        print(
+            f"- Photos: {kind}{n} — the body below is the caption, "
+            f"shown {pos} the photos"
+        )
     print("\n## Body preview\n")
     body = (item.get("text") or "").strip()
     if body:

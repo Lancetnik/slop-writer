@@ -77,7 +77,7 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
 
 | Command | Does | Needs |
 | --- | --- | --- |
-| `schedule` | queue a Markdown post (body from `--file` or stdin) to publish at `--at`; Markdown→Telethon entities via `_md2entities`; `--photo` (repeatable, ≤10 → album) attaches images, body becomes the caption (may be empty; length caps enforced by Telegram — 1024/2048 Premium — not the CLI); prints confirmation, no DB write | **post rights** + session |
+| `schedule` | queue a Markdown post (body from `--file` or stdin) to publish at `--at`; Markdown→Telethon entities via `_md2entities`; `--photo` (repeatable, ≤10 → album) attaches images, body becomes the caption (may be empty; length caps enforced by Telegram — 1024/2048 Premium — not the CLI); `--caption-above` puts it on top via an `invert_media` monkey patch (Telethon v1 won't expose it, see #4410); prints confirmation, no DB write | **post rights** + session |
 | `reschedule` | move scheduled post `--id` to a new `--at` (body unchanged); re-applies the 1h floor | **post rights** + session |
 | `edit` | replace scheduled post `--id`'s body (from `--file` or stdin, time unchanged); **no** floor check | **post rights** + session |
 

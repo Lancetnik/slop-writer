@@ -22,6 +22,7 @@ session as the scrapers — the Bot API cannot schedule.
 import asyncio
 import logging
 import sys
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
@@ -29,7 +30,12 @@ from typing import Annotated
 import typer
 from dotenv import load_dotenv
 from telethon.errors import MediaCaptionTooLongError, MessageTooLongError
-from telethon.tl.functions.messages import GetScheduledMessagesRequest
+from telethon.tl.functions.messages import (
+    EditMessageRequest,
+    GetScheduledMessagesRequest,
+    SendMediaRequest,
+    SendMultiMediaRequest,
+)
 from telethon.tl.types import Message
 
 from utils._common import DATA_DIR
@@ -170,6 +176,34 @@ def _reject_too_long(text: str, *, media: bool) -> None:
     raise typer.Exit(code=1)
 
 
+@contextmanager
+def _invert_media_patch(client, invert: bool):
+    """Make the friendly Telethon calls carry `invert_media` (caption above).
+
+    Telethon v1's send_file/edit_message don't expose the flag and never will
+    (feature-frozen, LonamiWebs/Telethon#4410 — the maintainer's suggested
+    route is exactly this monkey patch). Wrap the client's request dispatch
+    and stamp the flag onto the raw send/edit requests the friendly API
+    builds; everything else (uploads, album grouping) passes through
+    untouched."""
+    original = client._call
+
+    async def patched(sender, request, ordered=False, flood_sleep_threshold=None):
+        if isinstance(
+            request, (SendMediaRequest, SendMultiMediaRequest, EditMessageRequest)
+        ):
+            request.invert_media = invert
+        return await original(
+            sender, request, ordered=ordered, flood_sleep_threshold=flood_sleep_threshold
+        )
+
+    client._call = patched
+    try:
+        yield
+    finally:
+        del client._call  # drop the shadow, the class method takes over again
+
+
 def _parse_when(at: str) -> datetime:
     """ISO-8601-with-offset -> aware datetime, enforcing the lead-time floor.
 
@@ -213,6 +247,7 @@ async def schedule_post(
     when: datetime,
     session_file: str,
     photos: list[Path] | None = None,
+    caption_above: bool = False,
 ) -> None:
     async with channel_session(session_file, channel) as (client, entity):
         log.info("authenticated, scheduling post to %s for %s", channel, when.isoformat())
@@ -223,14 +258,20 @@ async def schedule_post(
                 # mangle literal */_/` in the caption. None disables that
                 # fallback; non-empty entities are used either way. Several
                 # photos become one album, with the caption on its first item.
-                sent = await client.send_file(
-                    entity,
-                    [str(p) for p in photos] if len(photos) > 1 else str(photos[0]),
-                    caption=text,
-                    formatting_entities=entities,
-                    parse_mode=None,
-                    schedule=when,
+                patch = (
+                    _invert_media_patch(client, True)
+                    if caption_above
+                    else nullcontext()
                 )
+                with patch:
+                    sent = await client.send_file(
+                        entity,
+                        [str(p) for p in photos] if len(photos) > 1 else str(photos[0]),
+                        caption=text,
+                        formatting_entities=entities,
+                        parse_mode=None,
+                        schedule=when,
+                    )
                 msg = sent[0] if isinstance(sent, list) else sent
             else:
                 msg = await client.send_message(
@@ -252,6 +293,7 @@ async def schedule_post(
             "text": text,
             "entities": len(entities),
             "photos": len(photos) if photos else 0,
+            "caption_above": caption_above,
         },
     )
 
@@ -288,7 +330,10 @@ async def reschedule_post(
         # edit_message returns None for scheduled edits (Telethon can't map the
         # UpdateNewScheduledMessage response to a Message), so build the summary
         # from known inputs: the id is stable and the new time is `when`.
-        await client.edit_message(entity, msg_id, schedule=when)
+        # The patch re-sends the post's invert_media (caption-above) state: the
+        # raw edit would otherwise silently reset it to caption-below.
+        with _invert_media_patch(client, bool(existing.invert_media)):
+            await client.edit_message(entity, msg_id, schedule=when)
     summarize_schedule(
         channel,
         {
@@ -313,11 +358,13 @@ async def edit_post(
         when = existing.date
         log.info("editing scheduled post #%d in %s (time unchanged)", msg_id, channel)
         # Like reschedule, edit_message returns None for scheduled edits; the id
-        # and time are unchanged, so report from known values.
+        # and time are unchanged, so report from known values. The patch keeps
+        # the post's invert_media (caption-above) state across the edit.
         try:
-            await client.edit_message(
-                entity, msg_id, text, formatting_entities=entities, schedule=when
-            )
+            with _invert_media_patch(client, bool(existing.invert_media)):
+                await client.edit_message(
+                    entity, msg_id, text, formatting_entities=entities, schedule=when
+                )
         except MediaCaptionTooLongError:
             _reject_too_long(text, media=True)
         except MessageTooLongError:
@@ -344,6 +391,14 @@ FileOpt = Annotated[
     typer.Option(
         help="Path to the Markdown file with the post body. Omit (or pass '-') "
         "to read the body from stdin, e.g. `--file - <<'EOF' ... EOF`."
+    ),
+]
+CaptionAboveOpt = Annotated[
+    bool,
+    typer.Option(
+        "--caption-above",
+        help="Render the body above the photos instead of below (the UI's "
+        "'move caption up'). Only meaningful with --photo.",
     ),
 ]
 PhotoOpt = Annotated[
@@ -374,22 +429,34 @@ def schedule(
     at: AtOpt,
     file: FileOpt = None,
     photo: PhotoOpt = None,
+    caption_above: CaptionAboveOpt = False,
     session_file: SessionOpt = DEFAULT_SESSION,
 ) -> None:
     """Queue a Markdown post to publish at a future time.
 
     Body is Markdown rendered straight to Telegram entities (_md2entities).
     --photo attaches images: the body becomes the caption (may be empty) and
-    several photos form one album. Length caps are enforced by Telegram, not
-    the CLI (captions: 1024, 2048 with Premium; text posts: 4096) — a
-    rejection is reported readably and nothing is queued. The post must be
-    scheduled at least 1 hour ahead; scheduled posts are not persisted (their
-    ids differ from published ids and carry no engagement)."""
+    several photos form one album; --caption-above puts the caption on top of
+    the photos. Length caps are enforced by Telegram, not the CLI (captions:
+    1024, 2048 with Premium; text posts: 4096) — a rejection is reported
+    readably and nothing is queued. The post must be scheduled at least
+    1 hour ahead; scheduled posts are not persisted (their ids differ from
+    published ids and carry no engagement)."""
     when = _parse_when(at)
     photos = _check_photos(photo) if photo else None
+    if caption_above and not photos:
+        typer.echo("--caption-above only makes sense with --photo.", err=True)
+        raise typer.Exit(code=2)
     text, entities = _render_markdown(file, allow_empty=bool(photos))
+    if caption_above and not text.strip():
+        typer.echo("--caption-above needs a non-empty body to place above.", err=True)
+        raise typer.Exit(code=2)
     _require_session(session_file)
-    asyncio.run(schedule_post(channel, text, entities, when, session_file, photos))
+    asyncio.run(
+        schedule_post(
+            channel, text, entities, when, session_file, photos, caption_above
+        )
+    )
 
 
 @app.command("reschedule")
