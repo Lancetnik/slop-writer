@@ -28,6 +28,7 @@ from typing import Annotated
 
 import typer
 from dotenv import load_dotenv
+from telethon.errors import MediaCaptionTooLongError, MessageTooLongError
 from telethon.tl.functions.messages import GetScheduledMessagesRequest
 from telethon.tl.types import Message
 
@@ -59,10 +60,6 @@ UTC = timezone.utc
 # leash. The human owner can still edit this constant. See docs/adr/0003.
 MIN_LEAD = timedelta(hours=1)
 
-# Telegram caps a media caption at 1024 UTF-16 units (a text-only post gets
-# 4096). Checked client-side so the agent gets an actionable error instead of
-# a server-side MEDIA_CAPTION_TOO_LONG after the upload.
-CAPTION_LIMIT = 1024
 # A Telegram album (grouped media) holds at most 10 items.
 MAX_ALBUM = 10
 # Extensions Telegram accepts as *photos*. Anything else would silently go out
@@ -153,17 +150,24 @@ def _check_photos(photos: list[str]) -> list[Path]:
     return paths
 
 
-def _check_caption(text: str) -> None:
-    """Media captions are capped harder than text posts — fail before upload."""
+def _reject_too_long(text: str, *, media: bool) -> None:
+    """Readable report when Telegram rejects the body for length.
+
+    Length is deliberately NOT checked client-side: the cap depends on the
+    account (photo captions: 1024 UTF-16 units, 2048 with Premium; text
+    posts: 4096) and Telegram is the authority — a hardcoded check would
+    wrongly block Premium accounts. Rejection leaves nothing queued/changed."""
     n = _utf16_len(text)
-    if n > CAPTION_LIMIT:
-        typer.echo(
-            f"Body is {n} UTF-16 units, but a photo caption is capped at "
-            f"{CAPTION_LIMIT} (text-only posts get 4096). Shorten the body "
-            "or drop the photos.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
+    if media:
+        cap = "photo-caption cap (1024 UTF-16 units, 2048 with Telegram Premium)"
+    else:
+        cap = "text-post cap (4096 UTF-16 units)"
+    typer.echo(
+        f"Telegram rejected the body: {n} UTF-16 units is over this account's "
+        f"{cap}. Shorten the body — nothing was queued or changed.",
+        err=True,
+    )
+    raise typer.Exit(code=1)
 
 
 def _parse_when(at: str) -> datetime:
@@ -212,28 +216,33 @@ async def schedule_post(
 ) -> None:
     async with channel_session(session_file, channel) as (client, entity):
         log.info("authenticated, scheduling post to %s for %s", channel, when.isoformat())
-        if photos:
-            # parse_mode=None matters: with an *empty* entity list send_file
-            # falls back to Telethon's own Markdown parser, which would mangle
-            # literal */_/` in the caption. None disables that fallback;
-            # non-empty entities are used either way. Several photos become
-            # one album, with the caption on its first item.
-            sent = await client.send_file(
-                entity,
-                [str(p) for p in photos] if len(photos) > 1 else str(photos[0]),
-                caption=text,
-                formatting_entities=entities,
-                parse_mode=None,
-                schedule=when,
-            )
-            msg = sent[0] if isinstance(sent, list) else sent
-        else:
-            msg = await client.send_message(
-                entity,
-                text,
-                formatting_entities=entities,
-                schedule=when,
-            )
+        try:
+            if photos:
+                # parse_mode=None matters: with an *empty* entity list send_file
+                # falls back to Telethon's own Markdown parser, which would
+                # mangle literal */_/` in the caption. None disables that
+                # fallback; non-empty entities are used either way. Several
+                # photos become one album, with the caption on its first item.
+                sent = await client.send_file(
+                    entity,
+                    [str(p) for p in photos] if len(photos) > 1 else str(photos[0]),
+                    caption=text,
+                    formatting_entities=entities,
+                    parse_mode=None,
+                    schedule=when,
+                )
+                msg = sent[0] if isinstance(sent, list) else sent
+            else:
+                msg = await client.send_message(
+                    entity,
+                    text,
+                    formatting_entities=entities,
+                    schedule=when,
+                )
+        except MediaCaptionTooLongError:
+            _reject_too_long(text, media=True)
+        except MessageTooLongError:
+            _reject_too_long(text, media=False)
     summarize_schedule(
         channel,
         {
@@ -298,10 +307,6 @@ async def edit_post(
 ) -> None:
     async with channel_session(session_file, channel) as (client, entity):
         existing = await _get_scheduled(client, entity, msg_id)
-        # A media post's body is a *caption* with the tighter cap; only known
-        # after fetching the target, hence checked here and not in the command.
-        if existing.media is not None:
-            _check_caption(text)
         # Re-send the existing schedule date: it both keeps the post in the
         # scheduled queue and is the flag that tells Telegram this edit targets
         # the scheduled message (not a published one with the same id).
@@ -309,9 +314,14 @@ async def edit_post(
         log.info("editing scheduled post #%d in %s (time unchanged)", msg_id, channel)
         # Like reschedule, edit_message returns None for scheduled edits; the id
         # and time are unchanged, so report from known values.
-        await client.edit_message(
-            entity, msg_id, text, formatting_entities=entities, schedule=when
-        )
+        try:
+            await client.edit_message(
+                entity, msg_id, text, formatting_entities=entities, schedule=when
+            )
+        except MediaCaptionTooLongError:
+            _reject_too_long(text, media=True)
+        except MessageTooLongError:
+            _reject_too_long(text, media=False)
     summarize_schedule(
         channel,
         {
@@ -340,8 +350,8 @@ PhotoOpt = Annotated[
     list[str] | None,
     typer.Option(
         help="Path to an image to attach (.jpg/.jpeg/.png/.webp). Repeat for "
-        "an album, up to 10. The body becomes the caption (max 1024 chars, "
-        "may be empty)."
+        "an album, up to 10. The body becomes the caption (may be empty; "
+        "Telegram caps it at 1024 chars, 2048 with Premium)."
     ),
 ]
 AtOpt = Annotated[
@@ -369,15 +379,15 @@ def schedule(
     """Queue a Markdown post to publish at a future time.
 
     Body is Markdown rendered straight to Telegram entities (_md2entities).
-    --photo attaches images: the body becomes the caption (capped at 1024 vs a
-    text post's 4096, and may be empty), several photos form one album. The
-    post must be scheduled at least 1 hour ahead; scheduled posts are not
-    persisted (their ids differ from published ids and carry no engagement)."""
+    --photo attaches images: the body becomes the caption (may be empty) and
+    several photos form one album. Length caps are enforced by Telegram, not
+    the CLI (captions: 1024, 2048 with Premium; text posts: 4096) — a
+    rejection is reported readably and nothing is queued. The post must be
+    scheduled at least 1 hour ahead; scheduled posts are not persisted (their
+    ids differ from published ids and carry no engagement)."""
     when = _parse_when(at)
     photos = _check_photos(photo) if photo else None
     text, entities = _render_markdown(file, allow_empty=bool(photos))
-    if photos:
-        _check_caption(text)
     _require_session(session_file)
     asyncio.run(schedule_post(channel, text, entities, when, session_file, photos))
 

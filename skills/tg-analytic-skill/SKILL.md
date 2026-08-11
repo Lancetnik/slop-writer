@@ -275,7 +275,7 @@ EOF
 
 Markdown renders straight to Telegram formatting (no HTML step) — read [references/markup.md](references/markup.md) before writing the body.
 
-`--photo PATH` (repeatable) attaches images to a `schedule`d post; several photos publish as **one album**. The body then becomes the **caption**: capped at **1024 chars** (a text-only post gets 4096) and allowed to be empty (omit `--file` for a caption-less photo post). Only real photo files are accepted (`.jpg`/`.jpeg`/`.png`/`.webp`) — anything else would go out as a document, so convert first. `edit` rewrites the caption of an existing photo post (same 1024 cap) but cannot add or replace the photos themselves.
+`--photo PATH` (repeatable) attaches images to a `schedule`d post; several photos publish as **one album**. The body then becomes the **caption** and may be empty (omit `--file` for a caption-less photo post). Length caps are **enforced by Telegram, not the CLI** — they depend on the account (captions: 1024 chars, 2048 with Premium; text posts: 4096); if Telegram rejects the body, the command exits 1 with a readable error and nothing is queued. Only real photo files are accepted (`.jpg`/`.jpeg`/`.png`/`.webp`) — anything else would go out as a document, so convert first. `edit` rewrites the caption of an existing photo post but cannot add or replace the photos themselves.
 
 `--at` must be **ISO-8601 with a UTC offset** (e.g. `...+03:00`); a naive time with no offset is rejected as ambiguous. The post must be scheduled **at least 1 hour ahead**, so an earlier `--at` exits 1.
 
