@@ -31,5 +31,9 @@
       "Bash(tr *)",
       "Bash(uv run skills/tg-analytic-skill/scripts/tg_query.py *)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "codegraph"
+  ],
+  "enableAllProjectMcpServers": true
 }
