@@ -1,3 +1,15 @@
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `Lancetnik/tg-analytic-skill`, driven by the
+`gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See
+`docs/agents/domain.md`.
+
 <!-- CODEGRAPH_START -->
 ## CodeGraph
 
