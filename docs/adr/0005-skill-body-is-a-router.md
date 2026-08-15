@@ -43,17 +43,24 @@ as their second hop.
   `querying.md` — so diagnosis arrives with the command instead of 200 lines
   away. Rows whose "fix" was to tell the user what the error already says were
   dropped.
-- First-run setup left the skill entirely: it is `skills/setup-tg-analytic/`,
+- First-run setup left the skill entirely: it was `skills/setup-tg-analytic/`,
   a user-invoked skill (ADR-adjacent to 0003's split of read from write — the
   human, not the agent, holds the interactive login). `SKILL.md` says nothing
-  about it: `_credentials` and `_require_session` carry the whole instruction
-  ("ask the user to run `/setup-tg-analytic`, then stop"), so it arrives with
-  the failure that needs it, at zero context cost, and reaches users driving
-  the CLIs by hand too. A line in the body would have been that message's
-  second copy — one that only pays off in the runs where it never fires.
-- `.env.example` was deleted; the setup skill writes `.tg-analytic/.env`
-  itself. A template file only worked when the reader could find the skill
-  directory, which is the thing that varies by install method.
+  about it: `_credentials` and `_require_session` carry the whole instruction,
+  so it arrives with the failure that needs it, at zero context cost, and
+  reaches users driving the CLIs by hand too. A line in the body would have
+  been that message's second copy — one that only pays off in the runs where
+  it never fires.
+
+  **Superseded in part by Lancetnik/slop-writer#20**, which deleted that skill:
+  setup is now `slop-writer init`, a terminal command. The *placement* argument
+  above survives intact and got stronger — the remedy still travels only in the
+  error text (`hint`), which is now the sole thing that tells an agent what to
+  ask for. What changed is that credentials no longer pass through the model's
+  context at all, which a skill could not offer however it was written.
+- `.env.example` was deleted; setup writes `.tg-analytic/.env` itself. A
+  template file only worked when the reader could find the skill directory,
+  which is the thing that varies by install method.
 - Adding a command is now a one-file edit in `references/`. `SKILL.md` changes
   only when a new *branch* appears — a fourth CLI, or a new always-true
   invariant.

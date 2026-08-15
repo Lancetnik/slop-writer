@@ -1,12 +1,18 @@
-# tg-scraper / tg-analytic-skill
+# tg-scraper / slop-writer
 
 A Claude Code **skill** that analyzes a Telegram channel (the author's own
 [@fastnewsdev](https://t.me/fastnewsdev)). Not an app — a bundled CLI the skill
-drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
+drives. **Two install channels** (#21), both serving `skills/slop-writer/` from
+this repository: `uv tool install slop-writer` + `slop-writer install` (which
+copies the skill out of the wheel), and `npx skills@latest add ...`. No drift
+detection — one version covers package and skill, and the last writer wins on
+disk.
 
 ## Layout
 
-- `skills/tg-analytic-skill/` — the skill itself (read-only when installed).
+- `skills/slop-writer/` — the skill itself (read-only when installed). The
+  directory name matches the distribution, and both channels write
+  `.claude/skills/slop-writer/`, so a project never ends up with two copies.
   - `SKILL.md` — a **router**, not a manual (docs/adr/0005): the invariants every
     branch needs plus a table pointing at the per-CLI reference. Command flags
     belong in `references/`, so a new command usually edits a reference and
@@ -25,16 +31,15 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   - `references/markup.md` — supported Markdown→Telegram markup for
     `tg_publish.py`; read before writing a post body. Reached via
     `publishing.md`.
-- `skills/setup-tg-analytic/` — second, **user-invoked** skill
-  (`disable-model-invocation: true`): collects credentials, writes
-  `.tg-analytic/.env`, hands the TTY login to the user. The CLIs name it in
-  their missing-credentials/session errors, so the agent knows to stop and ask
-  rather than attempt an interactive login.
+  There is **no second skill**: `setup-tg-analytic` was deleted by #20 and its
+  whole job is `slop-writer init`. Nothing replaced it — the server's
+  `NO_CREDENTIALS`/`NO_SESSION` hint is the mechanism, and the agent relays it.
+  A thin "setup skill" would recreate the deleted one under a new name.
 - `src/slop_writer/` — the **library, and now the shipped server**, published
   to PyPI as `slop-writer`. It holds the domain logic; the scripts are argument
   parsing and output rendering, nothing else, which is what lets `server.py` be
   a *second caller* of the same functions rather than a rewrite. The scripts
-  name it in their PEP-723 headers (`slop-writer>=0.3,<0.4`), so `uv run`
+  name it in their PEP-723 headers (`slop-writer>=0.4,<0.5`), so `uv run`
   fetches it from the index; nothing is vendored into the skill directory.
   Modules import each other relatively (`from .db import …`).
   - `db.py` — paths, the `SCHEMA` + `FTS_SCHEMA` constants (**source of truth**
@@ -80,8 +85,15 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     `WRITE_TOOLS` / `permission_rules()` are the read/write split written down
     for `install` to copy. Argument parsing and rendering only; no Telegram
     logic.
+  - `install.py` — `install` / `uninstall`: the **agent wiring** (#19). Knows
+    about MCP clients and nothing about Telegram — no secrets, no TTY, no
+    network. Copies `server.permission_rules()` rather than restating it.
+  - `init.py` — `init`: the **Telegram state** (#19). Knows about credentials
+    and sessions and nothing about MCP clients. No `input()` — prompting lives
+    in `cli.py`, which owns the TTY, so these stay testable without one.
   - `cli.py` — the `slop-writer` console script (argparse, not typer). Decides
-    the project root — from cwd, or `--project` — and loads `.env`.
+    the project root — from cwd, or `--project` — and loads `.env`. The only
+    module in the package that prompts, prints, or catches `SlopWriterError`.
   - `markdown.py` — `publish.py` only: walks mistune's Markdown AST straight
     to Telethon `MessageEntity` objects (no HTML, no sulguk). Tables render as
     monospace `pre`; UTF-16 offset accounting lives here.
@@ -131,8 +143,10 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   checkout* (`[tool.uv.sources]`, editable), never to the released version —
   a guard reading the published schema would pass while the tree disagrees.
   It stays a standalone script rather than becoming a test: its subject is a
-  document under `skills/` that the package doesn't ship, and its editable pin
-  is a different resolution from the suite's. CI runs it as its own step.
+  document rather than a function, and its editable pin is a different
+  resolution from the suite's. CI runs it as its own step. (The older reason —
+  "a document the package doesn't ship" — expired with #20: the wheel now
+  carries `skills/` so `install` can copy it out.)
 - `.tg-analytic/` — **runtime state at the project root** (cwd), gitignored:
   `.env`, `session.session`, one `<channel>.db` per channel, `media/`. The
   **entrypoints** anchor this on `Path.cwd()` (`PROJECT_ROOT` at the top of
@@ -170,13 +184,24 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   `FastMCP` elsewhere. **python-dotenv** is a package dependency again as of
   0.3.0: `serve` decides the project root, so it is one of the callers that
   populates the environment `tg.py` reads.
+- **Wheel data** — `[tool.uv.build-backend] data = { purelib = "skills" }`
+  ships `skills/slop-writer/` *beside* the package in site-packages, which is
+  how `install` copies it out. It cannot live under `src/slop_writer/`: the
+  same directory is what `npx skills add` serves from the repository root, and
+  uv_build packs only files under the module root — a symlink into `skills/`
+  fails the build outright. `install.skill_source()` tries the source checkout
+  **first**, because an editable install materialises the data directory once
+  at sync time and never refreshes it when a skill file is edited.
 
 ## slop-writer commands
 
-The shipped console script. `install` / `init` arrive with #20.
+The shipped console script.
 
 | Command | Does | Needs |
 | --- | --- | --- |
+| `install` | wire this project's Claude Code config: the path-free `.mcp.json` entry, the permission block, the skill into `.claude/skills/slop-writer/`, the `CLAUDE.md` address block | nothing — no Telegram, no network |
+| `init` | Telegram credentials → `.tg-analytic/.env`, gitignore, and the TTY login | a real terminal (the user runs it) |
+| `uninstall` | remove exactly what `install` wrote; **never** `.tg-analytic/` | — |
 | `serve --mcp` | run the MCP server over stdio; `--project PATH` overrides the cwd-derived project root | launched by the MCP client, not by hand |
 
 ## MCP tools
