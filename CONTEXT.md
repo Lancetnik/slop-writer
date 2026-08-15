@@ -32,7 +32,9 @@ _Avoid_: comments group, chat, attached group
 **Standalone group**:
 A supergroup analyzed in its own right, not linked to any channel under
 analysis. Has join/leave events and engagement but no threads (threads
-require an originating channel post).
+require an originating channel post). Standalone describes the analysis, not
+the supergroup: the same one is a discussion group once its channel is
+analyzed, so a thread-free record says how it was scanned, not what it is.
 
 **Post**:
 A message published in the channel. Identified by its channel message id.
