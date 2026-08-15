@@ -7,7 +7,7 @@ compatibility: >-
 license: Apache-2.0
 metadata:
   author: Lancetnik
-  version: "2.0"
+  version: "2.1"
 ---
 
 # Telegram channel analytics
@@ -23,6 +23,8 @@ Run every command from the **project root**: the scripts anchor `.tg-analytic/` 
 | posts, comments, engagement, forwarders, subscriber growth, best hour to post, discussion-group activity | [references/scraping.md](references/scraping.md) | `tg_scrape.py` |
 | a number, a ranking, a text search — anything the printed summary didn't answer | [references/querying.md](references/querying.md) | `tg_query.py` |
 | to schedule, retime, or rewrite a future post | [references/publishing.md](references/publishing.md) | `tg_publish.py` |
+
+Publishing reaches a live channel, so it runs on an explicit instruction from the user and on their confirmation of the exact body and time.
 
 Read the branch's reference before running its CLI: each one carries a flag
 that quietly does the wrong thing when guessed — `scrape --limit` walks history

@@ -232,6 +232,7 @@ CREATE TABLE post_metrics (
 - `id` — autoincrement surrogate. Strictly increasing — newer rows always have higher `id` than older rows, even within the same `scrape_date` second. **Use `MAX(id)` for "latest", not `MAX(scrape_date)`.**
 - `post_id` — FK to `posts.id`. Indexed (`idx_post_metrics_post`).
 - `scrape_date` — ISO-8601 with microseconds, e.g. `2026-05-28T19:14:13.024294+00:00`. One row per `(post_id, scrape run)`; the same post gets new rows over time.
+- `views`, `forwards`, `reactions`, `comments_count` — cumulative totals as of `scrape_date`, not per-period counts. They settle at different speeds and `views` never settles at all, so a figure from this table means something only alongside the post's age. The *Every metric is a snapshot* section of [querying.md](querying.md) has the rules for reading them.
 - `stars` — paid reactions count (Telegram Stars). Separate from `reactions`.
 - `public_forwards_count` — count of public channels that re-shared this post (from Telegram's stats API; requires admin to populate). Details in `public_shares`.
 
@@ -243,8 +244,11 @@ WITH latest AS (
 )
 SELECT p.id, p.link, m.views, m.reactions, m.forwards, m.comments_count
 FROM posts p
-JOIN post_metrics m ON m.id IN (SELECT id FROM latest) AND m.post_id = p.id;
+JOIN post_metrics m ON m.id IN (SELECT id FROM latest) AND m.post_id = p.id
+WHERE p.forwarder_from_channel IS NULL;   -- the channel's own posts only
 ```
+
+Keep that `WHERE` in any query about how the channel performs: a post the channel forwarded from elsewhere carries the source channel's pull in its counters. Drop it only to ask about the forwards themselves.
 
 For engagement over time on a single post: `SELECT scrape_date, views, reactions FROM post_metrics WHERE post_id = ? ORDER BY id`.
 
@@ -310,8 +314,15 @@ CREATE TABLE subscriber_sources (
 ```
 
 - `date` — `YYYY-MM-DD` (UTC).
-- `source` — Telegram-supplied label. Observed values: `URL`, `Search`, `Groups`, `Channels`, `Other`. Don't assume the set is closed.
+- `source` — Telegram-supplied label. Observed values: `URL`, `Search`, `Groups`, `Channels`, `PM`, `Shareable Chat Folders`, `Other`. Treat the set as open — new labels appear.
 - `joins` — new subscribers from this source on this date. Sum across all sources for a given `date` equals (or closely approximates) `subscribers.joins` for the same date.
+
+Read this table as Telegram's *mechanism* of arrival, not as attribution:
+
+- A link to the channel published anywhere outside Telegram — another channel's post included — lands in `URL`, indistinguishable from organic traffic. `Channels` counts in-Telegram forward attribution alone, so `Channels = 0` is consistent with a collaboration that worked well.
+- Attributing a spike therefore needs context this DB doesn't hold: whether there was a seeding run, a collab, an outside publication. Ask the user; the numbers alone can't say.
+- `Shareable Chat Folders` is its own mechanism and can be a large share of arrivals — report it by name rather than folding it into `URL`.
+- Rows are upserted from the window Telegram returns, which is the widest it offers. Run `subscribers` soon after any event worth attributing: once a date falls out of that window it is unrecoverable.
 
 ## `group_messages` — comments and the discussion group, self-contained
 
@@ -352,15 +363,20 @@ CREATE TABLE group_messages (
   roots carry the channel post's reactions and would double-count.
 - `reactions` — reaction count at last scan (upserted in place, not a
   time series; paid stars folded in).
-- `user_id` — Telegram id of the sender. When a message was posted *as a
-  channel* (Telegram's "send as" feature), this is the channel's id and
-  `user_name`/`user_username` carry the channel's title/username.
+- `user_id` — Telegram id of the sender, and the identity to count people
+  by: `COUNT(DISTINCT user_id)`. A Telegram username is optional, so
+  `user_username` is a display field with holes in it. When a message was
+  posted *as a channel* (Telegram's "send as" feature), `user_id` is the
+  channel's id and `user_name`/`user_username` carry the channel's
+  title/username. Which ids belong to the channel's author, staff or bots
+  is not derivable from the channel handle — [querying.md](querying.md)
+  has the inventory query to run before aggregating.
 - `author` — derived convenience identity: best available human-readable
   name (`user_username`, else `user_name`, else `user_id` as text).
   Generated VIRTUAL column — computed on read, never stored or written.
-  Use it for `GROUP BY author` / `COUNT(DISTINCT author)`. Caveat: two
+  Use it for readable output and `GROUP BY author`. Caveat: two
   username-less users sharing a display name collapse into one `author`
-  value; use `user_id` when exactness matters.
+  value, so exact people-counts go through `user_id`.
 
 ## `group_events` — joins & leaves
 
@@ -506,6 +522,7 @@ SELECT p.id, p.link, m.reactions, m.views,
        substr(p.text, 1, 80) AS snippet
 FROM posts p
 JOIN post_metrics m ON m.id IN (SELECT id FROM latest) AND m.post_id = p.id
+WHERE p.forwarder_from_channel IS NULL
 ORDER BY m.reactions DESC
 LIMIT 10;
 ```
@@ -525,9 +542,33 @@ Thread stats per post (engagement excludes roots — always):
 
 ```sql
 SELECT gm.thread_post_id AS post_id, COUNT(*) AS replies,
-       COUNT(DISTINCT gm.author) AS commenters
+       COUNT(DISTINCT gm.user_id) AS commenters
 FROM group_messages gm
 WHERE gm.is_thread_root = 0 AND gm.thread_post_id IS NOT NULL
 GROUP BY gm.thread_post_id
 ORDER BY replies DESC;
+```
+
+Hour-of-day activity in the group. Dates are stored in UTC, so state the offset
+you want in the query — that keeps the answer the same on any machine. Ask the
+user which timezone to report in and substitute it for `+3 hours`:
+
+```sql
+SELECT strftime('%H', datetime(gm.date, '+3 hours')) AS hour,
+       COUNT(*) AS messages, COUNT(DISTINCT gm.user_id) AS authors
+FROM group_messages gm
+WHERE gm.is_thread_root = 0
+GROUP BY hour ORDER BY hour;
+```
+
+Joins by hour are a separate query, over a separate history — `group_events`
+accumulates only what each run's ~48h admin-log slice caught, so its coverage
+of a period differs from the message history's and the two belong in one table
+only if you have checked they span the same days:
+
+```sql
+SELECT strftime('%H', datetime(e.date, '+3 hours')) AS hour, COUNT(*) AS joins
+FROM group_events e
+WHERE e.kind = 'join'
+GROUP BY hour ORDER BY hour;
 ```

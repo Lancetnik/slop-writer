@@ -3,7 +3,9 @@
 The only commands that write to Telegram. They need **post rights** on the
 channel and the same session as the read commands. Nothing is persisted to the
 DB: scheduled ids differ from the ids a post gets once published, and carry no
-engagement yet.
+engagement yet — so the queue lives in Telegram alone, and `scheduled` is the only way to read it. `tg_query.py` never sees a future post.
+
+These commands reach a live channel. Show the user the exact body and the exact `--at`, get their go-ahead, then run the command.
 
 Read [markup.md](markup.md) before writing a post body — it lists the Markdown
 that survives the trip to Telegram entities.
@@ -19,6 +21,8 @@ UTC window) and a numbered `## Queue`, each entry headed by the scheduled time,
 a relative delta (`in ~17h` / `overdue 10m`) and the `sched-msg #` id, then the
 full body as a blockquote plus attachments. That `sched-msg` id is the `--id`
 for `reschedule` and `edit`; it is stable across an edit. Console output only.
+
+**Every time in that listing is UTC**, including the per-entry headings, while people keep their plans in local time. Convert to the user's timezone when you report the queue, and say which timezone you converted to.
 
 ## Queue a post — `schedule`
 
