@@ -9,6 +9,21 @@ server will build its error payload.
 
 Stdlib-only, like `db`: importing this must not drag Telethon in.
 
+**A message or a hint names an argument or an operation, never a surface.**
+The same string reaches a human reading stderr and a model reading a tool
+result, and only one of them has `--at` or a script to run; the server passes
+every non-setup hint through verbatim (`test_server.py`), so a remedy phrased
+for the wrong reader is a remedy that reader cannot follow. Where the surface
+genuinely differs the package has two seams and neither is a raise site: the
+caller supplies the differing noun (`publish.prepare_schedule(body_source=…)`
+— the CLI says `--file`, the server says the `body` argument), or the boundary
+swaps the whole hint (`server._SETUP_HINT`, for `NO_CREDENTIALS`/`NO_SESSION`,
+where the remedy really is a different command per caller). Everything else
+stays caller-neutral, and `test_errors.py` scans the source for the two forms
+that are unambiguously a CLI. The rule used to live in `publish.py`'s
+docstring, scoped to the one file #18 found the defect in; #40 found it had
+already been broken next door in `scheduled.py`.
+
 `code` is the machine-readable half, from the closed vocabulary decided in
 Lancetnik/slop-writer#15 (`ERROR_CODES`) and completed in #17, which found the
 original eleven short by six failures. It stays optional in the signature —

@@ -55,7 +55,14 @@ disk.
     `message` / `hint` / `code`. The domain **raises**; each entrypoint decides
     how to report. Stdlib-only. `ERROR_CODES` is the closed 16-code vocabulary
     the tool contract promises, **enforced at construction** — a code outside
-    it raises `ValueError`.
+    it raises `ValueError`. Its docstring also states the rule for the *prose*
+    half: **a message or a hint names an argument or an operation, never a
+    surface** (#18, generalised by #40) — the string reaches a human at stderr
+    and a model at a tool result, and only one of them has a flag or a script.
+    Two seams cover the case where the surface really does differ, and neither
+    is a raise site: the caller supplies the noun
+    (`prepare_schedule(body_source=…)`) or the boundary swaps the whole hint
+    (`server._SETUP_HINT`).
   - `query.py` — the read-only SQL guards (`validate_read_only`) and execution
     (`run_query`, `schema_listing`). **Stdlib-only** with `db.py`, which is
     what keeps a query answerable without a Telegram client.
@@ -159,6 +166,15 @@ disk.
     so that re-adding an unreachable code is an edit somebody justifies.
     `test_tg.py` is the behavioural half for `resolve_peer`'s two codes: the
     static scan proves a `code=` literal exists, not that the line runs.
+    The same `ast` walk carries the **prose** rule since #40: every `message`
+    and `hint` *literal* is scanned for a CLI flag or a `.py` script name, over
+    the modules `server.py` can reach — a scope **computed from the import
+    graph**, module-level imports only, so `install`/`init`/`cli` fall out as a
+    consequence (their reader is always a human) and a new domain module joins
+    the scan on its own. Interpolated values are skipped on purpose: the dev
+    CLI passing `--file draft.md` through `body_source` is that seam working.
+    It replaced a `test_publish.py` check scoped to one file, which is how the
+    defect survived next door in `scheduled.py`.
   - Nothing in the suite touches a Telegram session, `.tg-analytic/`, or the
     network. Live runs stay the acceptance step; they are no longer the only
     one.

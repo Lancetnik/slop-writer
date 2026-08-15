@@ -12,9 +12,17 @@ So this module checks the vocabulary two ways: at construction, where
 `SlopWriterError.__init__` enforces it, and statically over the package's own
 source, where every `code=` literal is visible whether or not a test can reach
 the line it sits on.
+
+The same argument, and the same `ast` walk, carries the other half of the
+promise — the *prose*. `message` and `hint` are read by whichever caller the
+domain is serving, and #40 found a hint telling a model to run a script only
+the CLI has. That defect is invisible to a construction-time check for exactly
+the reason above, so it gets the static treatment too.
 """
 
 import ast
+import re
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -155,3 +163,127 @@ def test_the_tool_boundary_names_flood_wait_once_for_every_tool():
     named = _codes_named_in_source()["FLOOD_WAIT"]
     assert "server.py" in named
     assert named <= {"server.py", "init.py"}
+
+
+# --------------------------------------------------------------------------
+# The prose half: a remedy the reader can actually follow
+# --------------------------------------------------------------------------
+#
+# `errors.py` states the rule — a message or a hint names an argument or an
+# operation, never a surface. It is enforced here rather than at the raise
+# sites because it is a property of a *literal*, and literals are visible in
+# source whether or not any test reaches the line.
+#
+# The scan is deliberately narrow: it catches the two forms that are
+# unambiguously a command line, not the general claim. A hint that says
+# "run `slop-writer init`" passes and should — that command is real, a human
+# runs it, and `server._SETUP_HINT` swaps in the server's own wording anyway.
+# What no reader of a tool result has is a flag or a script file.
+_CLI_ONLY = re.compile(r"--[a-z]|[\w-]+\.py\b")
+
+
+def _all_modules() -> dict[str, Path]:
+    return {p.stem: p for p in Path(slop_writer.__file__).parent.glob("*.py")}
+
+
+def _server_reachable() -> dict[str, Path]:
+    """The modules a tool call can raise from, by walking `server.py`'s imports.
+
+    Derived rather than listed, so the scope maintains itself: a module the
+    server starts importing joins the scan without anyone remembering, and the
+    exclusions are a consequence rather than a policy. `install`, `init` and
+    `cli` fall out because nothing on a tool path imports them — their reader
+    is always a human at a terminal, which is why "run `slop-writer install`
+    again" is exactly the right thing for them to say.
+
+    **Module-level imports only.** `render.summarize_install` imports `install`
+    from inside its own body, and that deferred import is the author drawing
+    this very line: the function renders for a human at a terminal, and the
+    module says so. Following it would drag the whole CLI half back in."""
+    modules = _all_modules()
+    seen: set[str] = set()
+    queue = deque(["server"])
+    while queue:
+        name = queue.popleft()
+        if name in seen or name not in modules:
+            continue
+        seen.add(name)
+        tree = ast.parse(modules[name].read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom) and node.level and node.module:
+                queue.append(node.module.split(".")[0])
+    return {name: modules[name] for name in seen}
+
+
+def _failure_prose() -> list[tuple[str, int, str]]:
+    """Every `message`/`hint` string a failure carries, as written in source.
+
+    Only the *literal* parts of an f-string: an interpolated value is the
+    caller's (`body_source`), and the CLI passing `--file draft.md` through it
+    is the seam working, not a violation of it."""
+
+    def literals(node: ast.expr) -> list[str]:
+        if isinstance(node, ast.Constant):
+            return [node.value] if isinstance(node.value, str) else []
+        if isinstance(node, ast.JoinedStr):
+            return [
+                v.value for v in node.values
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+            ]
+        if isinstance(node, ast.BinOp):
+            return literals(node.left) + literals(node.right)
+        return []
+
+    found: list[tuple[str, int, str]] = []
+    for name, path in sorted(_server_reachable().items()):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if called not in {"SlopWriterError", "UsageError"}:
+                continue
+            parts = list(node.args[:1]) + [
+                kw.value for kw in node.keywords if kw.arg == "hint"
+            ]
+            for part in parts:
+                found.extend(
+                    (f"{name}.py", node.lineno, text) for text in literals(part)
+                )
+    return found
+
+
+def test_the_scan_reaches_the_modules_a_tool_call_runs_through():
+    """The guard above is only as good as its scope, and the scope is computed.
+    A `server.py` rename or an import deleted by accident would otherwise
+    shrink it to nothing and leave every test below passing vacuously."""
+    reached = set(_server_reachable())
+    assert {"server", "publish", "scheduled", "tg", "query", "group"} <= reached
+    # Not reachable, and the reason the scan can afford to be strict.
+    assert reached.isdisjoint({"install", "init", "cli"})
+
+
+def test_no_failure_points_the_reader_at_a_surface_it_may_not_have():
+    """A flag or a script name in a message or a hint is a remedy addressed to
+    exactly one of two readers. #18 found `--at` and `--photo` being handed to
+    a model; #40 found `tg_scrape.py scheduled --channel <chan>` still doing it
+    from the read module next door, which #18's file-scoped test never opened.
+
+    Every non-setup hint crosses to the model verbatim
+    (`test_server.py::test_a_domain_hint_survives_when_it_is_not_a_setup_failure`),
+    so there is no later stage that could rewrite this one."""
+    offenders = [
+        (module, line, text)
+        for module, line, text in _failure_prose()
+        if _CLI_ONLY.search(text)
+    ]
+    assert not offenders
+
+
+def test_the_scan_would_catch_the_defect_it_was_written_for():
+    """The scan is worth only what it rejects, and everything it guards now
+    passes — so the regex is checked against the string #40 actually found,
+    and against the two shapes that must keep passing."""
+    assert _CLI_ONLY.search("List the queue with `tg_scrape.py scheduled --channel x`")
+    assert _CLI_ONLY.search("Shorten the body, or drop --photo and retry.")
+    assert not _CLI_ONLY.search("Ask the user to run `slop-writer init`, then stop.")
+    assert not _CLI_ONLY.search("Scrape the channel first — em dashes are — fine.")
