@@ -62,6 +62,16 @@ Markdown summary each command prints (top posts by views and reactions, top
 tags, outward forwarders and inward citations with their post ids) — usually
 the answer is right there without dropping into SQL.
 
+### Keeping the metric history usable
+
+`post_metrics` is a time series, but only of the moments you actually scraped — it cannot be backfilled. A routine `scrape --latest N` re-measures recent posts only, so an older post can sit on the single snapshot it got on its first day forever, and any "how did this post do over time" question then has nothing to answer from. Every so often, run `fetch` over a spread of older ids as well:
+
+```bash
+uv run "$SKILL/scripts/tg_scrape.py" fetch --channel @yourchannel 340 345 350 355
+```
+
+Views in particular keep climbing for months, so a post's snapshots are worth collecting long after it stops feeling current.
+
 To drive the CLIs by hand, the full command reference lives in the skill:
 
 - [`references/scraping.md`](./skills/tg-analytic-skill/references/scraping.md) — `tg_scrape.py`: `scrape`, `fetch`, `group`, `subscribers`, `views`

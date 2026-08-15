@@ -38,5 +38,6 @@ skills-lock.json
 
 .codegraph
 
-# Superpowers working artifacts (specs/plans) — local only; decisions live in docs/adr/
-docs/superpowers/
+# Working notes tied to private data (measurements against a real channel's DB)
+# — local only; decisions live in docs/adr/
+docs/private/
