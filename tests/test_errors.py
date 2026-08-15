@@ -141,11 +141,19 @@ def test_every_code_is_reachable_from_some_raise_site():
     assert unreached == UNREACHED_CODES
 
 
-def test_the_boundarys_own_codes_come_from_the_boundary():
-    """`INTERNAL` and `FLOOD_WAIT` are the server's to name — the domain never
-    raises either, because neither is a failure it can recognise: one is an
-    exception it did not anticipate, the other is raised by Telethon from any
-    call at any depth."""
-    named = _codes_named_in_source()
-    assert named["INTERNAL"] == {"server.py"}
-    assert named["FLOOD_WAIT"] == {"server.py"}
+def test_internal_is_the_boundarys_alone():
+    """`INTERNAL` labels an exception the domain did not anticipate, so it can
+    only be named where anticipation runs out. A second module naming it means
+    a raise site decided its own bug was unexpected — which is a code the model
+    can do nothing with, chosen where a real one was available."""
+    assert _codes_named_in_source()["INTERNAL"] == {"server.py"}
+
+
+def test_the_tool_boundary_names_flood_wait_once_for_every_tool():
+    """Telethon raises `FloodWaitError` from any call at any depth, so the
+    boundary is the only place a *tool* can name it once rather than eleven
+    times. `init.py` names it too and is not a counter-example: the login flood
+    happens before any tool exists, on a call the CLI makes directly."""
+    named = _codes_named_in_source()["FLOOD_WAIT"]
+    assert "server.py" in named
+    assert named <= {"server.py", "init.py"}
