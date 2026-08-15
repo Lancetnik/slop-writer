@@ -224,6 +224,76 @@ def _ensure_fts(conn: sqlite3.Connection) -> None:
         conn.execute(f"INSERT INTO {t}({t}) VALUES('rebuild')")
 
 
+def heal_album_phantoms(conn: sqlite3.Connection) -> None:
+    """Collapse each album back to a single `posts` row.
+
+    A scrape window that started inside an album used to take the first member
+    it saw for a post of its own: an extra row sharing the album's grouped_id,
+    with empty text, its own `post_metrics` series and a duplicate slice of the
+    album's attachments. Nothing failed - Telegram reports views/forwards on
+    every album member, so the phantom's numbers looked plausible - but every
+    SUM/AVG over posts counted the album twice or three times.
+
+    The scraper no longer creates them (`complete_albums` in tg_scrape.py); this
+    clears the ones already in the DB. The surviving row is the caption carrier,
+    or the lowest id when the album has no caption; the phantoms' metrics,
+    attachments and share rows go with them, while comment threads that got
+    re-pointed at a phantom move back onto the real post. An album with two
+    text-carrying rows is not a phantom pattern - it is logged and left alone."""
+    log = logging.getLogger(__name__)
+    rows = conn.execute(
+        """
+        SELECT grouped_id, id, length(COALESCE(text, ''))
+        FROM posts
+        WHERE grouped_id IS NOT NULL AND grouped_id <> ''
+          AND grouped_id IN (
+              SELECT grouped_id FROM posts
+              WHERE grouped_id IS NOT NULL AND grouped_id <> ''
+              GROUP BY grouped_id HAVING COUNT(*) > 1
+          )
+        ORDER BY grouped_id, id
+        """
+    ).fetchall()
+    if not rows:
+        return
+
+    albums: dict[int, list[tuple[int, int]]] = {}
+    for grouped_id, post_id, text_len in rows:
+        albums.setdefault(grouped_id, []).append((post_id, text_len))
+
+    pairs: list[tuple[int, int]] = []  # (phantom id, head id)
+    for grouped_id, members in albums.items():
+        head = next((pid for pid, n in members if n), members[0][0])
+        texted = [pid for pid, n in members if n]
+        if len(texted) > 1:
+            log.warning(
+                "album %s has %d post rows with text (%s) - not the phantom "
+                "pattern, left untouched",
+                grouped_id, len(texted), texted,
+            )
+            continue
+        pairs += [(pid, head) for pid, _ in members if pid != head]
+
+    if not pairs:
+        return
+    phantoms = [pid for pid, _ in pairs]
+    marks = ",".join("?" * len(phantoms))
+    conn.executemany(
+        "UPDATE group_messages SET thread_post_id = ? WHERE thread_post_id = ?",
+        [(head, pid) for pid, head in pairs],
+    )
+    conn.execute(f"DELETE FROM post_attachments WHERE post_id IN ({marks})", phantoms)
+    conn.execute(f"DELETE FROM post_metrics WHERE post_id IN ({marks})", phantoms)
+    conn.execute(f"DELETE FROM public_shares WHERE post_id IN ({marks})", phantoms)
+    conn.execute(f"DELETE FROM posts WHERE id IN ({marks})", phantoms)
+    conn.commit()
+    log.warning(
+        "removed %d phantom album post row(s) and their metrics: %s",
+        len(phantoms),
+        ", ".join(f"{pid} -> {head}" for pid, head in sorted(pairs)),
+    )
+
+
 def open_db(output_dir: Path, channel: str) -> sqlite3.Connection:
     output_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path_for(output_dir, channel))
@@ -231,4 +301,6 @@ def open_db(output_dir: Path, channel: str) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _ensure_fts(conn)
     _drop_legacy_tables(conn)
+    # After _ensure_fts so the posts delete trigger keeps the index in sync.
+    heal_album_phantoms(conn)
     return conn

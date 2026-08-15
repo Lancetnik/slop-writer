@@ -156,7 +156,7 @@ CREATE TRIGGER gm_fts_au AFTER UPDATE ON group_messages BEGIN
 END;
 ```
 
-Date/time columns are ISO-8601 strings throughout (`posts.date`, `posts.edit_date`, `public_channels.last_seen`, `public_shares.first_seen`, `post_metrics.scrape_date`, `group_messages.date`, `group_events.date`, `group_metrics.scrape_date`). Use SQLite's `date()`, `datetime()`, `strftime()` directly — no conversion needed.
+Date/time columns are ISO-8601 strings throughout (`posts.date`, `posts.edit_date`, `public_channels.last_seen`, `public_shares.first_seen`, `post_metrics.scrape_date`, `group_messages.date`, `group_events.date`, `group_metrics.scrape_date`). They are stored `T`-separated with an offset (`2026-04-07T08:38:01+00:00`) while `datetime('now', …)` returns a space-separated UTC string (`2026-08-13 17:21:37`), so a raw column compared against it is a **string** compare where `T` sorts after the space and rows from the boundary day leak into the window. Wrap the column in every time filter — `WHERE datetime(date) >= datetime('now', '-7 days')` — which lines up the separator and normalizes the offset to UTC.
 
 ## Repost direction cheat-sheet
 
@@ -190,8 +190,8 @@ CREATE TABLE posts (
 - `date`, `edit_date` — ISO-8601 with timezone, e.g. `2026-04-07T08:38:01+00:00`. `edit_date` is non-null only if the post was edited after publish.
 - `text` — post body, plain string. Empty for pure-media posts.
 - `reply_to_msg_id` — non-null only if the post is a reply (rare on broadcast channels).
-- `tags` — **JSON array of hashtag strings without the `#`**, e.g. `["AI", "claude", "cursor"]`. Empty posts store `[]`. Query with `json_each(tags)` to explode, or `tags LIKE '%"AI"%'` for a quick contains check.
-- `grouped_id` — Telegram album id. Non-null means the post is part of a multi-attachment album; its members live in `post_attachments`.
+- `tags` — **JSON array of hashtag strings without the `#`**, e.g. `["AI", "claude", "cursor"]`. Empty posts store `[]`. Query with `json_each(tags)` to explode, or `tags LIKE '%"AI"%'` for a quick contains check. These are the labels the author typed on some posts — read `text` to classify what posts are actually about.
+- `grouped_id` — Telegram album id. Non-null means the post is an album; **exactly one row per `grouped_id`** — the caption carrier — and its members live in `post_attachments`. Two rows sharing a `grouped_id` means a stale DB (pre-fix scrapes could split an album across rows and double-count it in every `SUM`/`AVG`); re-run any `tg_scrape.py` command to clean it up.
 - `forwarder_from_channel` — direction: **YOU reposted them.** If this post is a forward of another channel's post (i.e. not your original content), the source channel link (joins `public_channels.link`); NULL otherwise. The source channel is auto-inserted into `public_channels`. For the opposite direction (others reposting you) see `public_shares`.
 
 ## `post_attachments`
@@ -517,12 +517,9 @@ SELECT COUNT(*) AS joins
 FROM group_events e, posts p
 WHERE p.id = :post_id
   AND e.kind = 'join'
-  AND e.date >= p.date
-  AND datetime(e.date) < datetime(p.date, '+7 days');
+  AND datetime(e.date) >= datetime(p.date)
+  AND datetime(e.date) <  datetime(p.date, '+7 days');
 ```
-
-(`datetime(e.date)` normalizes the stored `T`-separated ISO string to
-SQLite's space-separated form so the boundary-day comparison is exact.)
 
 Thread stats per post (engagement excludes roots — always):
 

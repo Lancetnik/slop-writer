@@ -7,7 +7,10 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
 ## Layout
 
 - `skills/tg-analytic-skill/` — the skill itself (read-only when installed).
-  - `SKILL.md` — instructions Claude follows. Update it whenever commands change.
+  - `SKILL.md` — a **router**, not a manual (docs/adr/0005): the invariants every
+    branch needs plus a table pointing at the per-CLI reference. Command flags
+    belong in `references/`, so a new command usually edits a reference and
+    leaves `SKILL.md` alone.
   - `scripts/tg_scrape.py` — the Telegram-facing **read** CLI (Telethon).
   - `scripts/tg_publish.py` — the Telegram-facing **write** CLI: publish paths
     (`schedule`/`reschedule`/`edit`). Isolated from the read scripts on purpose
@@ -20,7 +23,8 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
       (**source of truth** for the DB layout), and DB open helpers.
       Stdlib-only so `tg_query.py` keeps its empty-dependencies property.
     - `_tg.py` — Telethon session/credential plumbing (`_credentials`,
-      `make_client`, `channel_session`, `_require_session`) shared by
+      `make_client`, `channel_session`, `_require_session`, `_resolve_peer`)
+      shared by
       `tg_scrape.py` and `tg_publish.py`. Telethon-dependent, so kept out of
       stdlib-only `_common.py`.
     - `_render.py` — pure-presentation Markdown renderers (`summarize_*`);
@@ -30,11 +34,20 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
       render as monospace `pre`; UTF-16 offset accounting lives here.
     - `_group.py` — discussion-group service/admin-log classification helpers
       used by `tg_scrape.py group`.
+  - `references/scraping.md` / `querying.md` / `publishing.md` — one per CLI,
+    each the target of one row in `SKILL.md`'s branch table: flags, worked
+    examples, and that CLI's failure modes co-located with the command they
+    hit.
   - `references/schema.md` — restates `SCHEMA` for the SQL-writing agent; read
-    before writing SQL.
+    before writing SQL. Reached via `querying.md`.
   - `references/markup.md` — supported Markdown→Telegram markup for
-    `tg_publish.py`; read before writing a post body.
-  - `.env.example` — template for the 3 credentials.
+    `tg_publish.py`; read before writing a post body. Reached via
+    `publishing.md`.
+- `skills/setup-tg-analytic/` — second, **user-invoked** skill
+  (`disable-model-invocation: true`): collects credentials, writes
+  `.tg-analytic/.env`, hands the TTY login to the user. The CLIs name it in
+  their missing-credentials/session errors, so the agent knows to stop and ask
+  rather than attempt an interactive login.
 - `tools/check_schema_doc.py` — **dev-only** drift guard, kept *outside* the
   skill so it isn't shipped to users; run after editing `SCHEMA` or
   `references/schema.md`.
@@ -96,8 +109,23 @@ Scrape selection flags are mutually exclusive; default to `--latest N`
 
 ## Key architecture facts (non-obvious)
 
+- Handles resolve through `_resolve_peer` **before** any `open_db` call, so a
+  typo exits 1 with `Cannot resolve @x` instead of a raw Telethon traceback
+  plus a stray empty `.tg-analytic/<typo>.db`. Keep that order when adding a
+  command; zero scraped posts then means an empty window, never a bad handle.
 - `post_metrics` is **append-only** — use `MAX(id)` for "latest snapshot", not
   `MAX(scrape_date)`. See the canonical CTE in `references/schema.md`.
+- **One album = one `posts` row.** A selection window can start inside an album,
+  handing the pipeline a *suffix* of it; `complete_albums` re-fetches the
+  missing members by id (≤10 per album, one round-trip) before `process_post`
+  picks the head, so a captionless member never becomes a post of its own. That
+  phantom row was silent — Telegram reports views/forwards on every album
+  member — and doubled the album in every `SUM`/`AVG`. `fetch` passes
+  `window_contiguous=False` because arbitrary ids can't prove an album whole.
+  `heal_album_phantoms` (in `_common.py`, run from `open_db` and again after a
+  scrape) deletes rows left by pre-fix runs, and `upsert_post` clears
+  `post_attachments` by `attachment_id` as well as `post_id` so an attachment
+  belongs to exactly one post.
 - Telethon TL types are dynamically generated, so Pyright flags `.sender`,
   `.chats`, `.full_chat`, `.forwards` etc. as unknown attributes throughout —
   these warnings are expected noise, not real errors.

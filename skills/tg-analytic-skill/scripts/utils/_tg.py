@@ -11,6 +11,11 @@ from pathlib import Path
 
 import typer
 from telethon import TelegramClient
+from telethon.errors import (
+    ChannelPrivateError,
+    UsernameInvalidError,
+    UsernameNotOccupiedError,
+)
 
 from ._common import DATA_DIR
 
@@ -20,6 +25,12 @@ DEFAULT_SESSION = str(DEFAULT_SESSION_FILE)
 # `login` lives in tg_scrape.py; point users there regardless of which script
 # tripped the missing-session check. One level up from this utils package.
 _LOGIN_SCRIPT = Path(__file__).resolve().parent.parent / "tg_scrape.py"
+
+# Setup is a separate, user-run skill: an agent that hits one of the errors
+# below must hand the work back to the human rather than try to log in itself
+# (the SMS prompt needs a TTY). Every message names the skill first and the
+# bare-terminal equivalent second, so the CLI stays usable on its own.
+_SETUP_SKILL = "setup-tg-analytic"
 
 
 def _credentials() -> tuple[int, str, str]:
@@ -36,8 +47,11 @@ def _credentials() -> tuple[int, str, str]:
         )
     except KeyError as e:
         typer.echo(
-            f"Missing {e.args[0]} - put TG_API_ID/TG_API_HASH/TG_PHONE in "
-            f"{DATA_DIR / '.env'} (see the skill's .env.example).",
+            f"Missing {e.args[0]} - Telegram credentials are not set up yet.\n"
+            f"Setup is a human step: ask the user to run the `/{_SETUP_SKILL}` "
+            "skill (once per project), then stop.\n"
+            "Doing it yourself: create an app at https://my.telegram.org/apps "
+            f"and put TG_API_ID/TG_API_HASH/TG_PHONE in {DATA_DIR / '.env'}.",
             err=True,
         )
         raise typer.Exit(code=1) from None
@@ -60,8 +74,11 @@ def _require_session(session_file: str) -> None:
         # relative path would point nowhere for most users.
         typer.echo(
             f"Telegram session not found at {session_file}\n"
-            f"Run `uv run {_LOGIN_SCRIPT} login` in your own "
-            "terminal first (interactive — needs an SMS code).",
+            f"Setup is a human step: ask the user to run the `/{_SETUP_SKILL}` "
+            "skill, then stop — `login` prompts for an SMS code on a TTY and "
+            "hangs when launched from a tool call.\n"
+            f"Doing it yourself, at a real terminal: `uv run {_LOGIN_SCRIPT} "
+            "login` from the project root.",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -78,7 +95,30 @@ async def channel_session(session_file: str, channel: str | None = None):
     client = make_client(session_file)
     await client.start(phone=_credentials()[2])
     try:
-        entity = await client.get_entity(channel) if channel else None
+        entity = await _resolve_peer(client, channel) if channel else None
         yield client, entity
     finally:
         await client.disconnect()
+
+
+async def _resolve_peer(client: TelegramClient, channel: str):
+    """Resolve a handle, or exit 1 with the one cause worth reporting.
+
+    A typo'd handle is the common failure and Telethon surfaces it as a bare
+    ValueError traceback; callers open their DB only after this returns, so a
+    typo no longer leaves an empty .tg-analytic/<typo>.db behind either."""
+    try:
+        return await client.get_entity(channel)
+    except (
+        ValueError,
+        UsernameInvalidError,
+        UsernameNotOccupiedError,
+        ChannelPrivateError,
+    ) as e:
+        typer.echo(
+            f"Cannot resolve {channel}: {e}\n"
+            "Check the handle for typos, and that this account can see the "
+            "channel (join it, or ask for access).",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None

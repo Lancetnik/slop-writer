@@ -1,351 +1,52 @@
 ---
 name: tg-analytic-skill
 description: >-
-  Use this skill when the user wants to analyze a Telegram channel — scrape posts, comments, forwards, and per-post engagement over time, or pull subscriber growth/churn by source and views by hour of day from Telegram's stats API. Also scans the channel's discussion group (or any group the account is in): thread engagement, join/leave events, hourly activity.Covers content, engagement, audience dynamics, and posting performance.
-  Can also schedule, reschedule, and edit a future post to the channel (Markdown body rendered to Telegram formatting, optionally with attached photos/an album) — its write capabilities. Do not use for one-off reads of a single message, for private chats the logged-in account doesn't admin.
-  Runs the bundled tg_scrape.py / tg_publish.py / tg_query.py CLIs.
+  Analyze a Telegram channel with the bundled CLIs: posts, comments, engagement over time and forwarder networks; subscriber growth and churn by source; views by hour of day; the linked discussion group's threads and join/leave events. Also the write path — schedule, reschedule, or edit a future post, optionally with photos. Not for reading one specific message, and not for chats the logged-in account cannot see.
 compatibility: >-
-  Requires Python >=3.10 with uv (PEP-723 inline deps install on
-  first run) and outbound network access to Telegram's API. Needs Telegram API
-  credentials (api_id/api_hash/phone) in .tg-analytic/.env and a session file
-  from a one-time interactive `login` that requires a TTY for the SMS code.
+  Python >=3.10 with uv (PEP-723 deps install on first run) and network access to Telegram's API. Credentials and the Telegram session come from the `setup-tg-analytic` skill, which the user runs once per project.
 license: Apache-2.0
 metadata:
   author: Lancetnik
-  version: "1.4"
+  version: "2.0"
 ---
 
-# Telegram channel analysis
+# Telegram channel analytics
 
-## When to use
+Three bundled CLIs over one Telegram channel: read from Telegram → store in a per-channel SQLite DB → report. Publishing scheduled posts is the only write path.
 
-- Use for **channel-level** analytics: content history, engagement over time, audience growth, forwarder networks, posting-time optimization.
-- Do **not** use to read a single specific message — call Telethon directly or open the link.
-- Do **not** use to read private chats or channels the account doesn't have at least observer access to. `subscribers` and `views` additionally require **admin** rights on a channel large enough for Telegram to compute stats.
-- Always confirm the channel handle with the user before the first scrape — a typo silently creates a new empty DB at `.tg-analytic/<typo>.db`.
+Run every command from the **project root**: the scripts anchor `.tg-analytic/` — session, one DB per channel, downloaded media — on the current working directory, never on the skill directory, which stays read-only. `<skill_dir>` in the references means the directory holding this SKILL.md; resolve it once and reuse it.
 
-## Reporting back to the user
+## Pick the branch
 
-Every command prints a Markdown summary block to stdout. Use it as-is:
-
-1. One-line headline (channel, time range, headline metric).
-2. Paste the script's stdout summary.
-3. If the user asked for depth the summary doesn't cover, follow with a
-   `tg_query.py` result (Markdown table — already formatted for chat).
-
-Don't paraphrase the summary; the script already pre-computes the
-most-asked questions.
-
-**Repost direction — easy to mix up, get it right:**
-
-- "Who re-shared YOUR posts" (scrape summary section) = OTHER channels
-  forwarded the user's content — this is the user's *reach*. SQL:
-  `public_shares` / `post_metrics.public_forwards_count`.
-- "YOUR reposts of OTHER channels" (scrape summary section) = the user's
-  channel forwarded SOMEONE ELSE's content — *not original content*. SQL:
-  `posts.forwarder_from_channel IS NOT NULL`.
-
-Never present one as the other; when reporting, name the direction explicitly
-("they re-shared you" vs "you reposted them").
-
-## First-run setup (do this before any scraping)
-
-All runtime state — credentials, Telegram session, per-channel DBs, downloaded media — lives in `.tg-analytic/` at your **project root** (the cwd you launch the script from). The skill itself is read-only. Run all commands from the project root, not from inside the skill directory.
-
-`<skill_dir>` in every command below means the directory containing this SKILL.md — substitute its actual path. It varies by install method: `.agents/skills/tg-analytic-skill` or `.claude/skills/tg-analytic-skill` in a consuming project, `~/.claude/skills/tg-analytic-skill` for a global install, `skills/tg-analytic-skill` in the source repo. Resolve it once (you know where this file was loaded from) and reuse it.
-
-The `scrape`/`fetch`/`subscribers`/`views` commands need two things in `.tg-analytic/`: a `.env` with Telegram API credentials, and a `session.session` from a one-time interactive login. The `query` command needs neither.
-
-If `.tg-analytic/.env` is missing:
-
-1. Ask the user for their `TG_API_ID`, `TG_API_HASH`, and `TG_PHONE` (international format, e.g. `+15551234567`). Point them at https://my.telegram.org/apps to create credentials if they don't have them.
-2. Create `.tg-analytic/` at the project root, then copy the skill's `.env.example` to `.tg-analytic/.env` and fill in the values.
-
-If `.tg-analytic/session.session` is missing, the next scrape/fetch/subscribers/views command will exit with an explicit error. When that happens, **stop and tell the user to run**:
-
-```
-uv run <skill_dir>/scripts/tg_scrape.py login
-```
-
-**in their own terminal** (not via you), from the project root — Telethon prompts on stdin for an SMS code and a 2FA password if enabled, which only works in an interactive TTY. Once it writes `.tg-analytic/session.session`, re-run the original command.
-
-## CLIs
-
-Three CLIs under `<skill_dir>/scripts/`:
-
-- **`tg_scrape.py`** - reads from Telegram. Commands: `scrape`, `fetch`, `group`, `subscribers`, `views`, `scheduled`.
-- **`tg_query.py`** - read-only SQL against the per-channel SQLite DB at `.tg-analytic/<channel>.db` (leading `@` stripped from filename).
-- **`tg_publish.py`** - the **write** path. Commands: `schedule` (queue a future post), `reschedule` (retime it), `edit` (rewrite its body). Needs the same session as `tg_scrape.py`.
-
-Run from the **project root** with `uv run <skill_dir>/scripts/<script>.py ...` — the scripts anchor `.tg-analytic/` on the current working directory. Always pass `--channel @name` explicitly. Every command prints a Markdown summary to stdout; lead with that when reporting to the user, then drop into `tg_query.py` for anything deeper.
-
-`subscribers` and `views` require the account to be an **admin** of the
-channel, and the channel must be eligible for Telegram stats (~500+ subs). If not, the command logs a clear error and exits 1.
-
-## Pick the pattern matching the user's intent
-
-All `scrape`/`fetch` runs persist to `.tg-analytic/<channel>.db` and **append** a
-`post_metrics` row per post per run, so repeated runs build a time series.
-Posts, comments, attachments, and forwarder shares are upserted/replaced.
-
-### Choose the flag first — never default to `--limit`
-
-`scrape` has four mutually exclusive selection modes. Pick exactly one based on what the user actually said. **Default to `--latest`, not `--limit`.**
-
-| User said... | Flag | Why this one |
+| The user wants | Read first | CLI |
 | --- | --- | --- |
-| "latest 10", "newest 10", "last 10", "10 most recent" | `--latest 10` | The only flag that iterates **newest-first**. Use whenever the user counts posts from the present. |
-| "posts from this week", "last 7 days", "since 2026-05-01", "after May 1" | `--offset-date DD-MM-YYYY` | Time-window framing. Compute the date locally; boundary is **exclusive** (strictly after). |
-| "posts after #1234", "from post 1234 onward", "resume scrape", "incremental refresh" | `--offset-id 1234` | Cursor-based forward walk, **inclusive** of 1234. Standard incremental pattern: read `MAX(id)` from the DB, pass it in. |
-| Specific known ids: "post 226", "refresh 103, 105, 108" | `fetch 103 105 108` (separate command) | One Telegram round-trip, no scan. Cheaper than `scrape --offset-id ... --limit 1`. |
-| First-ever scrape, "full history", "all posts" | *(no flag)* | Walks oldest→newest from message 1. Slow; only run once per channel. |
+| posts, comments, engagement, forwarders, subscriber growth, best hour to post, discussion-group activity | [references/scraping.md](references/scraping.md) | `tg_scrape.py` |
+| a number, a ranking, a text search — anything the printed summary didn't answer | [references/querying.md](references/querying.md) | `tg_query.py` |
+| to schedule, retime, or rewrite a future post | [references/publishing.md](references/publishing.md) | `tg_publish.py` |
 
-`--limit N` is **not a selection flag** — it's a cap that bounds one of the above. **Used alone it walks oldest-first from message 1 and stops after N**, which on a populated channel re-scrapes ancient history instead of returning recent posts. Only use `--limit` to bound a forward page after an offset, e.g. `--offset-id 299 --limit 1` to grab a single specific post.
+Read the branch's reference before running its CLI: each one carries a flag
+that quietly does the wrong thing when guessed — `scrape --limit` walks history
+from message 1, `--at` without a UTC offset is rejected, engagement queries
+need `is_thread_root = 0`.
 
-Worked examples of the three common requests:
-
-```
-# "scrape 10 latest posts"
-uv run <skill_dir>/scripts/tg_scrape.py scrape --channel @name --latest 10
-
-# "scrape posts from the last week"   →   date 7 days ago, DD-MM-YYYY
-uv run <skill_dir>/scripts/tg_scrape.py scrape --channel @name --offset-date 21-05-2026
-
-# "scrape posts after #1234"
-uv run <skill_dir>/scripts/tg_scrape.py scrape --channel @name --offset-id 1234
-```
-
-### 1. Initial channel scrape (full history)
+Shape of every invocation:
 
 ```
-uv run <skill_dir>/scripts/tg_scrape.py scrape --channel @name
+uv run <skill_dir>/scripts/tg_scrape.py scrape --channel @name --latest 100
 ```
 
-For a fast first look before committing to a full scrape of an unfamiliar
-channel, use `--latest N` (newest-first) — never `--limit N`:
+## Reporting back
 
-```
-uv run <skill_dir>/scripts/tg_scrape.py scrape --channel @name --latest 100 --no-media
-```
+Every command prints a Markdown summary block to stdout, pre-computing the
+most-asked questions. Report it as-is:
 
-### 2. Reindex specific posts (refresh metrics / comments / forwarders) — `fetch`
+1. A one-line headline — channel, window, headline metric.
+2. The script's summary, pasted verbatim rather than paraphrased.
+3. A `tg_query.py` table underneath, only when the user asked for something the
+   summary doesn't cover.
 
-```
-uv run <skill_dir>/scripts/tg_scrape.py fetch 103 105 108 --channel @name
-```
-
-Appends a new `post_metrics` row per id; replaces comments/attachments/shares for those posts. Missing ids are logged and skipped. Album members auto-group by `grouped_id`.
-
-Refresh metrics only — views/forwards/reactions/comments_count, no comment
-bodies (cheapest):
-
-```
-uv run <skill_dir>/scripts/tg_scrape.py fetch 103 105 108 --channel @name \
-    --no-comments --no-media --no-channel-info
-```
-
-To pick ids worth reindexing (e.g. recent bangers), pre-query the DB and pass the ids into `fetch`.
-
-### 3. Discussion-group analytics — `group`
-
-```
-# the channel's linked discussion group (threads join to posts;
-# rows land in the CHANNEL's DB)
-uv run <skill_dir>/scripts/tg_scrape.py group --channel @name --latest 500
-
-# any standalone group the account is a member of (own DB at
-# .tg-analytic/<group>.db; no thread linkage)
-uv run <skill_dir>/scripts/tg_scrape.py group --group @name --latest 500
-```
-
-Pass **exactly one** of `--channel`/`--group`. For a group that is attached
-to a channel you analyze, always use `--channel` — `--group` treats it as
-standalone and writes to a separate DB, divorced from the channel's posts
-(the script logs a notice when it detects this).
-
-Scans group history into three tables: `group_messages` (every non-service
-message, comments included — the single comment store, which `scrape` also
-writes to; see [references/schema.md](references/schema.md)), `group_events` (joins/leaves
-— needs only membership, **not** admin), and an append-only
-`group_metrics` member-count snapshot per run.
-
-Join/leave events come from **two sources**: service messages in the group
-history (any member can see these), plus — when the account is an **admin**
-of the group — the group's admin log, which records every membership change
-even when Telegram suppresses or deletes the service messages (it does,
-wholesale, during join bursts — e.g. after a CTA post). The two sources are
-deduped automatically. **The admin log only retains ~48 hours**, so to keep
-the join series complete, run `group` at least every 2 days; without admin
-rights the command logs a notice and falls back to service messages alone.
-
-Selection flags are the same four as `scrape` (the table above applies:
-default to `--latest N`, never bare `--limit`). Incremental refresh:
-`--offset-id` from `MAX(id)` over `group_messages`. No media is downloaded
-from groups (`media_type` is recorded).
-
-The summary prints joins/leaves by mechanism and by day, an hour-of-day
-activity table (joins / messages / unique authors, machine-local timezone —
-labeled; don't re-report those hours as UTC), every thread touched in the
-window (replies, unique commenters, time-to-first-reply), and top
-contributors. CTA-attribution ("did post #X's invite work?") is
-deliberately NOT pre-computed — use the canonical query in
-references/schema.md with the user's chosen window.
-
-Completeness caveat: without admin rights, event counts depend on service
-messages, which Telegram suppresses during join bursts and in very large
-groups — the summary's counts are what the scan *found*. Cross-check
-against the `group_metrics.members` trend before claiming totals (note
-that Telegram's own member count can lag a burst by hours).
-
-## Other commands
-
-### `subscribers` - audience growth & churn
-
-```
-uv run <skill_dir>/scripts/tg_scrape.py subscribers --channel @name
-```
-
-Prints date range, current total, net change, joins/leaves, daily averages,
-best/worst day, and new subscribers broken down by source. Upserts into
-`subscribers` (date|total|joins|leaves) and `subscriber_sources`
-(date|source|count). Repeated runs accumulate history beyond Telegram's
-retention window.
-
-### `views` - best time to post
-
-```
-uv run <skill_dir>/scripts/tg_scrape.py views --channel @name
-```
-
-Prints views per hour of day (0-23): peak hours, quietest hours, and the full
-24-hour breakdown. Console output only.
-
-Hours are in the **Telegram account's local timezone**, not UTC - that's what
-the stats API returns and there's no offset to convert from. When reporting
-peak hours to the user, say e.g. "20:00 local time (channel admin's tz)" so
-they don't misread it as UTC.
-
-### `scheduled` - upcoming (not-yet-published) posts
-
-```
-uv run <skill_dir>/scripts/tg_scrape.py scheduled --channel @name
-```
-
-Lists the channel's **scheduled** posts — ones queued to publish in the future —
-soonest-first. An `## Overview` (count + UTC window) followed by a numbered
-`## Queue`; each entry heads with the scheduled time, a relative delta
-(`in ~17h` / `overdue 10m`), and the `sched-msg #` id, then blockquotes the full
-post text and lists attachments (photo, or document name + size) under labeled
-`Text:` / `Attachments:` sections. Requires the account to have **post rights**
-on the channel; otherwise it logs a clear error and exits 1. Console output only
-— scheduled posts carry no engagement metrics yet and their `sched-msg` ids
-differ from the id a post gets once published, so nothing is persisted to the DB.
-
-### `tg_publish.py` - `schedule` / `reschedule` / `edit` - the write commands
-
-```
-# queue a new post
-uv run <skill_dir>/scripts/tg_publish.py schedule --channel @name \
-  --file post.md --at 2026-06-27T18:00:00+03:00
-
-# queue a post with photos (repeat --photo for an album, up to 10)
-uv run <skill_dir>/scripts/tg_publish.py schedule --channel @name \
-  --file post.md --photo cover.jpg --photo chart.png \
-  --at 2026-06-27T18:00:00+03:00
-
-# move an existing scheduled post to a new time (body unchanged)
-uv run <skill_dir>/scripts/tg_publish.py reschedule --channel @name \
-  --id 182 --at 2026-06-28T19:00:00+03:00
-
-# replace an existing scheduled post's body (time unchanged)
-uv run <skill_dir>/scripts/tg_publish.py edit --channel @name \
-  --id 182 --file revised.md
-```
-
-The **only** commands that write to Telegram; they live in `tg_publish.py`. `reschedule`/`edit` take the `--id` shown by `scheduled` and target the post in place (the `sched-msg` id is stable across an edit).
-
-For `schedule`/`edit`, the body comes from `--file PATH` **or** from **stdin** (`--file -`, or omit `--file`). Drafts usually carry metainfo (a header, trailing notes) that must **not** be published, so produce the clean body and pipe it via a quoted heredoc — no temp file, and backticks/`$`/quotes pass through verbatim:
-
-```
-uv run <skill_dir>/scripts/tg_publish.py schedule --channel @name \
-  --at 2026-06-27T18:00:00+03:00 --file - <<'EOF'
-**Body** with `code`, a price of 40$, and a ||spoiler||.
-EOF
-```
-
-Markdown renders straight to Telegram formatting (no HTML step) — read [references/markup.md](references/markup.md) before writing the body.
-
-`--photo PATH` (repeatable) attaches images to a `schedule`d post; several photos publish as **one album**. The body then becomes the **caption** and may be empty (omit `--file` for a caption-less photo post). By default the caption renders below the photos, as in the Telegram UI; `--caption-above` flips it on top (the UI's "move caption up"). `reschedule`/`edit` keep the caption position as-is. Length caps are **enforced by Telegram, not the CLI** — they depend on the account (captions: 1024 chars, 2048 with Premium; text posts: 4096); if Telegram rejects the body, the command exits 1 with a readable error and nothing is queued. Only real photo files are accepted (`.jpg`/`.jpeg`/`.png`/`.webp`) — anything else would go out as a document, so convert first. `edit` rewrites the caption of an existing photo post but cannot add or replace the photos themselves.
-
-`--at` must be **ISO-8601 with a UTC offset** (e.g. `...+03:00`); a naive time with no offset is rejected as ambiguous. The post must be scheduled **at least 1 hour ahead**, so an earlier `--at` exits 1.
-
-Needs **post rights** on the channel and the same session as the scrapers.
-
-Prints a confirmation block (publish time, `sched-msg` id, body preview); nothing is persisted — scheduled ids differ from published ids and carry no engagement. Verify it landed with `scheduled`.
-
-### `tg_query.py` - `query` - ad-hoc SQL
-
-Read [references/schema.md](references/schema.md) before writing SQL with `tg_query.py`. It documents every table, primary key, the repost-direction
-cheat-sheet (who re-shared you vs whom you reposted), and the common joins
-(latest metric per post, re-shares of your posts, repost sources, album items).
-
-```
-uv run <skill_dir>/scripts/tg_query.py --channel @name \
-  "SELECT p.id, p.link, m.views FROM posts p JOIN post_metrics m ON p.id = m.post_id ORDER BY m.views DESC LIMIT 10"
-```
-
-Read-only (SQLite `mode=ro`, writes rejected by the engine - safe for
-LLM-generated SQL). Output is a Markdown table. `--limit N` caps rows (default
-100, `0` = unlimited). `--no-truncate` to see full cell content (post body,
-long comments). Use whenever the user asks for data not in the stdout summary.
-
-For text search ("where did I write about X", "what did commenters say about
-Y") use the FTS5 indexes — `posts_fts` / `gm_fts` with `MATCH 'stem*'` and
-`bm25()` ranking — not `LIKE` over `text`. The *Full-text search* section of
-references/schema.md has the canonical queries; always search by `stem*`
-prefix (no stemmer), and filter `is_thread_root = 0` on `gm_fts` hits.
-
-If a query fails with `no such column` / `no such table`, the error output
-lists every table with its actual columns — rewrite the query from that
-listing instead of guessing again.
-
-
-## Validation
-
-After running a command, sanity-check the result before reporting:
-
-- After `scrape` / `fetch` — confirm rows landed:
-  ```
-  uv run <skill_dir>/scripts/tg_query.py --channel @name \
-    "SELECT COUNT(*) posts, MIN(date) oldest, MAX(date) newest FROM posts"
-  ```
-  If `posts` is 0, the channel handle or session is wrong, not the scrape.
-- After `subscribers` — the stdout summary's `period:` line should match the
-  window the user asked for. If empty, the channel is below Telegram's stats
-  threshold.
-- After `views` — expect 24 hourly buckets in the summary. Fewer means a thin stats window; mention this to the user instead of inventing peaks.
-- After `group` — confirm rows landed:
-  ```
-  uv run <skill_dir>/scripts/tg_query.py --channel @name \
-    "SELECT (SELECT COUNT(*) FROM group_messages) msgs, (SELECT COUNT(*) FROM group_events) events"
-  ```
-  (`--channel <group>` for a standalone group's DB.) Zero messages on a
-  non-empty group means a wrong handle or no membership.
-
-## Common errors
-
-| Symptom (stderr) | Cause | Fix |
-| --- | --- | --- |
-| `Telegram session not found at .tg-analytic/session.session` | First run, or session deleted | Tell user to run `uv run <skill_dir>/scripts/tg_scrape.py login` in their own terminal, from the project root. Do not try to run it yourself — it needs interactive stdin. |
-| `failed to get stats ... you must be an admin of a channel that is large enough` | Account isn't admin, or channel < ~500 subs | Skill cannot do `subscribers`/`views` here. Fall back to `scrape` + `post_metrics` for engagement signals. |
-| `no followers graph available` / `no top-hours graph available` | Stats exist but the requested graph is empty | Report to user; no retry helps. |
-| New, empty `.tg-analytic/<handle>.db` appeared | Channel handle typo | Confirm the handle with the user; delete the empty DB before re-running. |
-| `... has no linked discussion group` | Channel has comments disabled / no group attached | Only `--group` mode is possible, and only for groups the account can read. |
-| `no such table: posts_fts` / `gm_fts` on a MATCH query | DB written before the search index existed, or SQLite build lacks FTS5 | Run any `scrape`/`fetch`/`group` command to migrate the DB; meanwhile fall back to `LIKE '%...%'`. |
-| `is the discussion group of a channel ... re-run with --channel` (warning, not an error) | `--group` used on an attached group | Re-run with `--channel <channel>` to get thread↔post linkage in the channel's DB. |
-
-Telethon may also surface `FloodWaitError` mid-scrape on very large channels — the script logs and continues per item where possible. If a run aborts, re-run with `--offset-id <last-seen-id>` to resume forward rather than restart.
-
-## Long-running history
-
-`subscribers` and `views` periods are already the maximum Telegram offers. To build longer subscriber history, schedule `subscribers` periodically — upserts keep old rows.
+Before calling anything a repost, check the direction against the cheat-sheet
+in [references/schema.md](references/schema.md): "other channels re-shared your
+post" (the user's reach) and "the channel forwarded someone else's post" (not
+the user's own content) live in different tables and are easy to swap. Name the
+direction explicitly when you report it.

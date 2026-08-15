@@ -43,8 +43,19 @@ from telethon.tl.types import (
     StatsGraphAsync,
 )
 
-from utils._common import DATA_DIR, DEFAULT_OUTPUT_DIR, db_path_for, open_db
-from utils._tg import DEFAULT_SESSION, _require_session, channel_session
+from utils._common import (
+    DATA_DIR,
+    DEFAULT_OUTPUT_DIR,
+    db_path_for,
+    heal_album_phantoms,
+    open_db,
+)
+from utils._tg import (
+    DEFAULT_SESSION,
+    _require_session,
+    _resolve_peer,
+    channel_session,
+)
 from utils._group import (
     GroupEvent,
     auto_forward_post_id,
@@ -78,6 +89,10 @@ UTC = timezone.utc
 
 # Per-post progress prints every Nth post at INFO; per-post lines go to DEBUG.
 PROGRESS_EVERY = 50
+
+# Telegram caps an album at 10 items, so a window that cuts one can be missing
+# at most 9 members on either side of what it returned.
+ALBUM_MAX_ITEMS = 10
 
 
 def _log_progress(done: int, total: int, current: str, id_range: str) -> None:
@@ -148,6 +163,63 @@ def group_albums(messages: list[Message]) -> list[list[Message]]:
         else:
             standalone.append(msg)
     return [[m] for m in standalone] + list(groups.values())
+
+
+async def complete_albums(
+    client: TelegramClient,
+    entity,
+    groups: list[list[Message]],
+    fetched_ids: set[int],
+    window_contiguous: bool,
+) -> list[list[Message]]:
+    """Re-fetch album members that fell outside the selection window.
+
+    A window whose edge cuts an album used to hand `process_post` a *suffix*
+    of it, and the captionless first element of that suffix became a post row
+    of its own - a phantom carrying the album's grouped_id, an empty text, its
+    own `post_metrics` series (Telegram reports views/forwards on every album
+    member, so nothing looked wrong) and a duplicate slice of the album's
+    attachments. Every SUM/AVG over posts then counted the album twice.
+    Pulling the missing members back in restores "one row per album, owned by
+    the caption carrier" no matter where the window cut.
+
+    Probing is skipped when the window already proves the album is whole: over
+    a contiguous scrape window, a fetched id below (above) the group means the
+    neighbour on that side was seen and is not an album member. `fetch <ids>`
+    takes arbitrary ids, so it can prove nothing and both sides get probed."""
+    completed: list[list[Message]] = []
+    for group in groups:
+        gid = group[0].grouped_id
+        if not gid or len(group) >= ALBUM_MAX_ITEMS:
+            completed.append(group)
+            continue
+        lo = min(m.id for m in group)
+        hi = max(m.id for m in group)
+        room = ALBUM_MAX_ITEMS - len(group)
+        wanted: list[int] = []
+        if not (window_contiguous and any(i < lo for i in fetched_ids)):
+            wanted += [i for i in range(lo - room, lo) if i > 0]
+        if not (window_contiguous and any(i > hi for i in fetched_ids)):
+            wanted += list(range(hi + 1, hi + 1 + room))
+        wanted = [i for i in wanted if i not in fetched_ids]
+        if not wanted:
+            completed.append(group)
+            continue
+        # One round-trip per truncated album; missing ids come back as None.
+        extra = [
+            m
+            for m in await client.get_messages(entity, ids=wanted)
+            if isinstance(m, Message) and m.grouped_id == gid
+        ]
+        if extra:
+            log.info(
+                "album %s was cut by the window: pulled in %s to join %s",
+                gid,
+                sorted(m.id for m in extra),
+                sorted(m.id for m in group),
+            )
+        completed.append(group + extra)
+    return completed
 
 
 async def get_forward_source(
@@ -333,10 +405,19 @@ def upsert_post(
         ),
     )
 
-    # Replace attachments wholesale - cheaper than diffing and matches re-scrape semantics.
+    # Replace attachments wholesale - cheaper than diffing and matches re-scrape
+    # semantics. Rows are cleared by attachment_id too, not just post_id: an
+    # attachment belongs to exactly one post, so this drops copies a pre-fix run
+    # filed under a phantom album member (see `complete_albums`).
+    att_ids = [att_id for att_id, _, _, _ in attachments]
     conn.execute(
-        "DELETE FROM post_attachments WHERE post_id = ?",
-        (msg.id,),
+        "DELETE FROM post_attachments WHERE post_id = ?"
+        + (
+            f" OR attachment_id IN ({','.join('?' * len(att_ids))})"
+            if att_ids
+            else ""
+        ),
+        (msg.id, *att_ids),
     )
     conn.executemany(
         """
@@ -488,6 +569,10 @@ async def process_post(
     with_comments: bool,
     with_media: bool,
 ) -> dict:
+    # One row per album, owned by its caption carrier (the lowest id when the
+    # album has no caption at all). `complete_albums` guarantees `group` holds
+    # every member, so this pick is the same whatever the window was - no
+    # non-head member ever reaches `posts`.
     group.sort(key=lambda m: m.id)
     parent = next((m for m in group if m.text), group[0])
 
@@ -546,15 +631,22 @@ async def _persist_messages(
     with_comments: bool,
     with_media: bool,
     with_channel_info: bool,
+    window_contiguous: bool,
 ) -> tuple[list[dict], list[dict]]:
     """Group, persist and summarize a batch of fetched messages."""
-    post_groups = group_albums(raw)
+    post_groups = await complete_albums(
+        client,
+        channel_entity,
+        group_albums(raw),
+        {m.id for m in raw},
+        window_contiguous,
+    )
 
     post_summaries: list[dict] = []
     channel_map: dict[str, ChannelRecord] = {}
     total = len(post_groups)
     done = 0
-    all_ids = [m.id for m in raw]
+    all_ids = [m.id for g in post_groups for m in g]
     id_range = f"{min(all_ids)}..{max(all_ids)}" if all_ids else "—"
 
     for group in post_groups:
@@ -589,6 +681,9 @@ async def _persist_messages(
             }
         )
     conn.commit()
+    # open_db healed what the DB already held; this catches the album whose
+    # real head only arrived in *this* run, next to an older phantom.
+    heal_album_phantoms(conn)
     channel_summaries.sort(key=lambda c: c["link"])
     post_summaries.sort(key=lambda p: p["id"])
     return post_summaries, channel_summaries
@@ -602,25 +697,31 @@ async def ingest(
     with_comments: bool,
     with_media: bool,
     with_channel_info: bool,
+    window_contiguous: bool = True,
 ) -> None:
     """Shared run lifecycle behind `scrape` and `fetch`.
 
     Opens the DB, connects, pulls messages via `source(client, entity)`,
     persists them, and prints the summary. The two commands differ only in
-    their message-source adapter."""
+    their message-source adapter - and in `window_contiguous`, which tells
+    `complete_albums` whether the ids around a group can be trusted to prove
+    the album is whole (true for a scrape window, false for arbitrary ids)."""
     scrape_date = datetime.now(UTC).isoformat()
     media_dir = output_dir / "media"
 
-    conn = open_db(output_dir, channel)
-    try:
-        async with channel_session(session_file, channel) as (client, entity):
+    async with channel_session(session_file, channel) as (client, entity):
+        # DB after the handle resolved: opening it first would leave an empty
+        # .tg-analytic/<typo>.db behind whenever the handle is wrong.
+        conn = open_db(output_dir, channel)
+        try:
             raw = await source(client, entity)
             post_summaries, channel_summaries = await _persist_messages(
                 client, entity, channel, raw, conn, media_dir,
                 scrape_date, with_comments, with_media, with_channel_info,
+                window_contiguous,
             )
-    finally:
-        conn.close()
+        finally:
+            conn.close()
 
     summarize_scrape(channel, post_summaries, channel_summaries)
 
@@ -671,6 +772,7 @@ async def scrape(
     await ingest(
         channel, output_dir, session_file, source,
         with_comments, with_media, with_channel_info,
+        window_contiguous=True,
     )
 
 
@@ -702,6 +804,7 @@ async def fetch_by_ids(
     await ingest(
         channel, output_dir, session_file, source,
         with_comments, with_media, with_channel_info,
+        window_contiguous=False,
     )
 
 
@@ -993,7 +1096,7 @@ async def resolve_group_target(
     be linked to a channel, log a notice suggesting --channel and proceed
     (explicit beats clever: never silently redirect to another DB)."""
     if channel:
-        ch_entity = await client.get_entity(channel)
+        ch_entity = await _resolve_peer(client, channel)
         full = await client(GetFullChannelRequest(ch_entity))
         linked = full.full_chat.linked_chat_id
         if not linked:
@@ -1004,7 +1107,7 @@ async def resolve_group_target(
         entity = await client.get_entity(PeerChannel(linked))
         channel_id = ch_entity.id
     else:
-        entity = await client.get_entity(group)
+        entity = await _resolve_peer(client, group)
         channel_id = None
 
     g_full = await client(GetFullChannelRequest(entity))
@@ -1326,10 +1429,11 @@ async def scan_group(
         iter_offset_id = offset_id - 1 if offset_id else 0
         iter_offset_date = offset_date
 
-    conn = open_db(output_dir, handle)
-    try:
-        async with channel_session(session_file) as (client, _):
-            target = await resolve_group_target(client, channel, group)
+    async with channel_session(session_file) as (client, _):
+        target = await resolve_group_target(client, channel, group)
+        # DB after the target resolved — see the same note in `ingest`.
+        conn = open_db(output_dir, handle)
+        try:
             log.info(
                 "authenticated, scanning group %s (%s)",
                 target.title or target.link, handle,
@@ -1401,16 +1505,16 @@ async def scan_group(
                 len(rows), len(events), db_path_for(output_dir, handle),
             )
 
-        lo, hi = (
-            (min(scanned_ids), max(scanned_ids)) if scanned_ids else (0, 0)
-        )
-        threads = (
-            _load_thread_stats(conn, lo, hi)
-            if target.channel_id is not None
-            else []
-        )
-    finally:
-        conn.close()
+            lo, hi = (
+                (min(scanned_ids), max(scanned_ids)) if scanned_ids else (0, 0)
+            )
+            threads = (
+                _load_thread_stats(conn, lo, hi)
+                if target.channel_id is not None
+                else []
+            )
+        finally:
+            conn.close()
 
     overview = {
         "title": target.title,
