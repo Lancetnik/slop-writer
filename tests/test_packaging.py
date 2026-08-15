@@ -47,6 +47,20 @@ def test_dev_dependencies_are_not_project_dependencies():
     assert "pytest" in " ".join(pyproject["dependency-groups"]["dev"])
 
 
+def test_the_skill_is_declared_as_wheel_data():
+    """`install` copies the skill out of the wheel (#19), so the wheel has to
+    carry it. It cannot live *inside* `src/slop_writer/`: the same directory is
+    served to the `npx skills add` channel from the repository root (#21), and
+    uv_build refuses a symlink outright. Purelib data is what bridges the two,
+    and losing this line is invisible until a user's first `install`.
+
+    The wheel itself is checked in CI, which builds one; here we only stop the
+    declaration disappearing."""
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
+    assert pyproject["tool"]["uv"]["build-backend"]["data"]["purelib"] == "skills"
+    assert (REPO / "skills" / "slop-writer" / "SKILL.md").is_file()
+
+
 def test_the_query_path_stays_importable_without_telethon():
     """`db`, `query` and `errors` are the Telegram-free trio (#22): a caller
     must be able to answer an analytics question without a client.

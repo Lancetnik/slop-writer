@@ -1,6 +1,6 @@
 [project]
 name = "slop-writer"
-version = "0.3.0"
+version = "0.4.0"
 description = "Telegram channel analytics: the library behind the slop-writer skill, and later its MCP server."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -45,7 +45,7 @@ Repository = "https://github.com/Lancetnik/slop-writer"
 Issues = "https://github.com/Lancetnik/slop-writer/issues"
 
 # The dev CLIs stay PEP-723 scripts under `uv run`; this is the shipped
-# command. `serve` lands with #17, `install` / `init` with #20.
+# command — `install`, `init`, `serve`, `uninstall` as of #20.
 [project.scripts]
 slop-writer = "slop_writer.cli:main"
 
@@ -67,4 +67,14 @@ dev = ["pytest>=8,<9"]
 # the result, so a stale wheel fails loudly instead of passing quietly.
 testpaths = ["tests"]
 addopts = "--strict-markers --strict-config"
+
+# The skill ships inside the wheel so `slop-writer install` can copy it out
+# (#19) and one version covers both (#21). It cannot live under
+# `src/slop_writer/`: the same directory is what `npx skills add` serves from
+# the repository root, and uv_build packs only files under the module root —
+# a symlink into `skills/` fails the build outright. Purelib data is what
+# bridges the two: the directory installs *beside* the package in
+# site-packages, and `install.skill_source` looks for it there.
+[tool.uv.build-backend]
+data = { purelib = "skills" }
 

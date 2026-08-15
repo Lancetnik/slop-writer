@@ -505,3 +505,73 @@ def summarize_group(
             out.append(f"- Most-reacted message: {top['reactions']} reactions — "
                        f"{top.get('author') or 'anonymous'}: \"{_md_cell(top.get('text'))}\"")
     return "\n".join(out)
+
+
+def summarize_install(result) -> str:
+    """What `install` did, for a human at a terminal.
+
+    Lives here for the same reason the others do — nothing in `slop_writer`
+    prints — even though this one output never reaches a model. `install` is a
+    CLI-only command, so this renders plain lines, not the LLM-oriented
+    Markdown above."""
+    from .install import SERVER_NAME, other_client_entry
+
+    root = result.project_root
+    out = [f"Wired {SERVER_NAME} {result.version} into {root}", ""]
+    out.append(f"  {result.mcp_config.relative_to(root)} — server entry "
+               f"(overwritten every install; that is the upgrade path)")
+    skill_rel = result.skill_target.relative_to(root)
+    out.append(f"  {skill_rel} — skill, "
+               f"{'replaced' if result.skill_existed else 'installed'}")
+    if result.permissions_seeded:
+        out.append(f"  {result.settings.relative_to(root)} — permissions: "
+                   f"reads allowed, publishing behind a prompt")
+        out.append(f"  {result.memory_file.relative_to(root)} — address block "
+                   f"so subagents find the skill")
+    else:
+        # Seeding on every run would silently restore an `ask` rule the human
+        # deliberately removed — headless autoposting is a supported choice.
+        out.append("  (permissions and CLAUDE.md left alone — seeded on first "
+                   "install only, so your edits survive an upgrade)")
+        out.append("  publishing tools this version expects under `ask`: "
+                   + ", ".join(result.ask_tools))
+
+    if result.skills_lock_conflict:
+        out.append("")
+        out.append("! skills-lock.json also tracks this skill. Both channels "
+                   "serve the same directory, so the lock's hash will no "
+                   "longer match — expected, not a failure.")
+
+    if not result.on_path:
+        out.append("")
+        out.append("! `slop-writer` is not on PATH, so the client will fail to "
+                   "start the server. Add your tool bin directory to PATH "
+                   "(`uv tool update-shell`), then check with "
+                   "`which slop-writer`.")
+
+    out.append("")
+    out.append("Verified on Claude Code only. For Cursor, Codex or the Copilot "
+               "coding agent, paste this into their MCP config yourself:")
+    out.append("")
+    out.append(other_client_entry())
+    out.append("")
+    out.append("Next: restart your MCP client (.mcp.json is read at session "
+               "start only), and run `slop-writer init` to log in to Telegram.")
+    return "\n".join(out)
+
+
+def summarize_uninstall(result) -> str:
+    """What `uninstall` removed, and — more usefully — what it did not."""
+    out = [f"Removed slop-writer's wiring from {result.project_root}", ""]
+    if result.removed:
+        out.extend(f"  {item}" for item in result.removed)
+    else:
+        out.append("  (nothing to remove — was it installed in this project?)")
+    if result.kept:
+        out.append("")
+        out.append("Kept:")
+        for item in result.kept:
+            out.append(f"  {item}")
+    out.append("")
+    out.append("Restart your MCP client to drop the server from the session.")
+    return "\n".join(out)

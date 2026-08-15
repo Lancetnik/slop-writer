@@ -204,7 +204,7 @@ def test_window_cut_at_the_low_edge_pulls_the_missing_members_back():
     head = msg(9, grouped_id=555, text="the caption")
     room = ALBUM_MAX_ITEMS - 2
     wanted = tuple(i for i in range(10 - room, 10) if i > 0)
-    client = FakeClient({wanted: [head if i == 9 else None for i in wanted]})
+    client = FakeClient([head])
 
     out = run(complete_albums(client, None, [group], {10, 11, 12}, True))
 
@@ -216,7 +216,7 @@ def test_window_cut_at_the_high_edge_probes_upwards():
     group = album(10, 11, caption_on=10)
     tail = msg(12, grouped_id=555)
     wanted = tuple(range(12, 12 + (ALBUM_MAX_ITEMS - 2)))
-    client = FakeClient({wanted: [tail if i == 12 else None for i in wanted]})
+    client = FakeClient([tail])
 
     out = run(complete_albums(client, None, [group], {9, 10, 11}, True))
 
@@ -230,7 +230,7 @@ def test_neighbours_of_another_album_are_not_absorbed():
     group = album(10, 11)
     stranger = msg(9, grouped_id=666, text="a different album")
     wanted = tuple(i for i in range(10 - (ALBUM_MAX_ITEMS - 2), 10) if i > 0)
-    client = FakeClient({wanted: [stranger if i == 9 else None for i in wanted]})
+    client = FakeClient([stranger])
 
     out = run(complete_albums(client, None, [group], {10, 11, 12}, True))
 

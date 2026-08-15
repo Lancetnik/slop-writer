@@ -1,9 +1,9 @@
 ---
-name: tg-analytic-skill
+name: slop-writer
 description: >-
   Analyze a Telegram channel with the bundled CLIs: posts, comments, engagement over time and forwarder networks; subscriber growth and churn by source; views by hour of day; the linked discussion group's threads and join/leave events. Also the write path — schedule, reschedule, or edit a future post, optionally with photos. Not for reading one specific message, and not for chats the logged-in account cannot see.
 compatibility: >-
-  Python >=3.10 with uv (PEP-723 deps install on first run) and network access to Telegram's API. Credentials and the Telegram session come from the `setup-tg-analytic` skill, which the user runs once per project.
+  Python >=3.10 with uv (PEP-723 deps install on first run) and network access to Telegram's API. Credentials and the Telegram session come from `slop-writer init`, which the user runs once per project in their own terminal.
 license: Apache-2.0
 metadata:
   author: Lancetnik

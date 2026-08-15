@@ -96,13 +96,23 @@ jobs:
               sys.exit(f"::error::dev dependency leaked into the wheel: {bad}")
           if any(n.startswith("tests/") for n in names):
               sys.exit("::error::tests/ was packaged into the wheel")
+
+          # `install` copies the skill out of the wheel, and one version
+          # covering package and skill is the only thing holding them together
+          # (#21). A wheel without it installs a server no skill describes,
+          # and the failure appears at the user's first `slop-writer install`.
+          if not any(
+              n.endswith(".data/purelib/slop-writer/SKILL.md") for n in names
+          ):
+              sys.exit("::error::the skill is missing from the wheel")
           PY
 
   schema-doc:
-    # Not a pytest test: this guards a document in skills/, which the package
-    # does not ship, and its PEP-723 header pins slop-writer to this checkout
-    # editable — a different resolution from the suite's. Same push/PR trigger,
-    # separate subject.
+    # Not a pytest test: its PEP-723 header pins slop-writer to this checkout
+    # editable, a different resolution from the suite's, and its subject is a
+    # document rather than a function. (It used to be "a document the package
+    # does not ship" — #20 made the wheel carry skills/ so `install` can copy
+    # it out, which changes the reason but not the separation.)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
