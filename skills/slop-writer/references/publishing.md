@@ -11,11 +11,10 @@ not anyone looks at it again.
 
 - Publish only on an **explicit instruction** from the user. "Draft me a post"
   is not one; neither is "that looks good".
-- Show the **exact body** and the **exact time**, in the user's own timezone,
-  and get their go-ahead before the call.
-- The user's client prompts on every `publish_*` call. That prompt is a
-  backstop against a mistake, not the agreement — do not treat clicking it as
-  the confirmation you were supposed to ask for.
+- The user's client prompts on every `publish_*` call, showing the exact body
+  and time. That prompt **is** the agreement: call, then report what landed,
+  in the user's own timezone. A wrong body or hour costs one `publish_edit`
+  or `publish_reschedule`.
 - After writing, **verify with `list_scheduled`**. Telegram returns nothing
   useful from an edit to a scheduled message, so the confirmation you get back
   is assembled from what was sent, not from what Telegram stored. It is a
@@ -38,10 +37,10 @@ query, and never pass a published post's id to a publish tool.
 heading. People hold their plans in local time, so convert before reporting
 the queue and say which timezone you converted to.
 
-Going the other way, a publish time must carry a UTC offset. A bare wall-clock
-time is rejected rather than guessed at, which is deliberate: "Friday at six"
-is ambiguous, and the failure is cheaper than publishing to the wrong hour.
-Resolve it with the user, not with an assumption.
+Going the other way, a publish time must carry a UTC offset — a naive one is
+rejected. The hour is yours to pick, not the user's to supply: rescheduling
+keeps the scheduled post's current time of day, a fresh one takes the hour the
+channel usually publishes at. Name the instant you picked.
 
 **A new publish time must be at least an hour out.** The floor has no
 override, and it is not a Telegram limit — it exists so that scheduling cannot
@@ -74,5 +73,5 @@ cannot be changed — that needs a new post.
 - **Body changes, time stays** → `publish_edit`. It **replaces** the body
   rather than appending to it, so read the post with `list_scheduled` first
   whenever you are editing text you did not write in this session.
-- **Both change** → reschedule and edit are separate calls; confirm both with
-  the user before either.
+- **Both change** → reschedule and edit are separate calls; report both once
+  they land.

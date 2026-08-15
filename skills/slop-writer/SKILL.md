@@ -97,9 +97,8 @@ retry with one of those.
 ## The write gate
 
 `publish_*` reaches a live channel. Run one only on an explicit instruction
-from the user, and only after showing them the exact body and the exact time
-and getting their go-ahead. The user's client will also prompt; that prompt is
-a backstop, not the agreement.
+from the user. Their client prompts on every call with the exact body and
+time, and that prompt is the agreement; report what you queued once it lands.
 
 ## Reporting back
 
