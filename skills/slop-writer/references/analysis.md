@@ -56,10 +56,7 @@ reporting change over time.
 
 **A ranking compares snapshots, not posts.** Each row was measured when its
 post was last scraped, and the staler row is the *smaller* one: views kept
-arriving after it was taken. Two posts of identical age therefore rank by
-scrape recency rather than by performance — a separate effect from age. Run
-`refresh_posts` over a window before ranking it by a rate, or two runs of one
-question return different winners.
+arriving after it was taken. Run `refresh_posts` over a window before ranking it by a rate.
 
 ## Who is who in the group
 
