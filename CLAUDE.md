@@ -325,10 +325,19 @@ Non-obvious, and enforced in `server.py`:
 All three components, always the `v` prefix, no suffix, no two-component form
 (`v2.1` is **not** a release tag), no bare `2.0.0`.
 
-- The tag must equal `v` + the `version` in `pyproject.toml`, which stays the
-  single place a version is declared (`slop_writer.__version__` reads it back
-  from the installed distribution metadata). One version covers package **and**
-  skill — #21 accepted the drift that buys.
+- The tag must equal `v` + the `version` in `pyproject.toml`, which is the
+  **source** of the version (`slop_writer.__version__` reads it back from the
+  installed distribution metadata). One version covers package **and** skill —
+  #21 accepted the drift that buys.
+- **A bump is a two-file edit**: `pyproject.toml` and `SKILL.md`'s
+  `metadata.version`, byte-identical, three components. The skill needs its own
+  copy because the `npx skills add` channel serves the repository directory and
+  never sees `pyproject.toml`, and nothing derives it — the file is static in
+  both channels. `tests/test_packaging.py` pins the copy to the source, which
+  is the only thing standing between a patch release and a skill that
+  misreports which release is on disk. Through 0.4.0 they were aligned by hand
+  exactly once (#30, resetting the skill's own `2.1` counter onto the package's
+  line), and 0.4.0 shipped saying `0.4` — hence the guard.
 - `publish.yaml` gates a release on tag-vs-`pyproject` agreement, but it strips
   the `v` with `${GITHUB_REF_NAME#v}`, so it accepts a bare `2.0.0` and would
   accept `v2.1` if `pyproject` said `2.1`. **The naming rule is a convention
