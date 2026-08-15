@@ -386,15 +386,20 @@ async def resolve_group_target(
 
 async def _fetch_admin_log_events(
     client: TelegramClient, entity
-) -> tuple[list[GroupEvent], dict[int, tuple[str | None, str | None]]]:
+) -> tuple[list[GroupEvent], dict[int, tuple[str | None, str | None]], bool]:
     """Joins/leaves from the group's admin log (~48h retention), plus the
-    subjects' (name, username) from the log's own user objects.
+    subjects' (name, username) from the log's own user objects, plus whether
+    the log could be read at all.
 
     The log records membership changes even when Telegram suppresses or
     deletes the corresponding service messages — which is exactly what
     happens to CTA join bursts — so for an admin account it is the
     authoritative join source. Requires admin; degrades to empty with a
-    notice otherwise."""
+    notice otherwise.
+
+    That degradation is why the third element exists: empty is ambiguous — no
+    membership changes and no admin rights return the same two values — and the
+    difference decides whether the counts are a total or a floor."""
     events_filter = ChannelAdminLogEventsFilter(
         join=True, leave=True, invite=True, ban=True, unban=False,
         kick=True, unkick=False, promote=False, demote=False, info=False,
@@ -429,14 +434,14 @@ async def _fetch_admin_log_events(
             "admin log unavailable (admin rights needed) - joins/leaves "
             "rely on service messages only (%s)", e,
         )
-        return [], {}
+        return [], {}, False
     if events:
         log.info(
-            "admin log: %d membership event(s) (~48h retention - run "
-            "`group` at least every 2 days to keep the series complete)",
+            "admin log: %d membership event(s) (~48h retention - scan at "
+            "least every 2 days to keep the series complete)",
             len(events),
         )
-    return events, users
+    return events, users, True
 
 
 def _dedupe_admin_events(
@@ -631,7 +636,7 @@ async def scan_group_with_client(
         scanned_ids = [m.id for m in raw]
 
         events = [e for m in service for e in classify_service_message(m)]
-        admin_events, users = await _fetch_admin_log_events(
+        admin_events, users, admin_log = await _fetch_admin_log_events(
             client, target.entity
         )
         if admin_events:
@@ -694,6 +699,10 @@ async def scan_group_with_client(
         "members": target.members,
         "standalone": target.channel_id is None,
         "id_range": f"{lo}..{hi}" if scanned_ids else "—",
+        # Where the join/leave counts came from: without the admin log they are
+        # a floor, because Telegram suppresses service messages during the join
+        # bursts most worth counting.
+        "admin_log": admin_log,
     }
     messages = [
         {

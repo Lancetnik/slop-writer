@@ -424,6 +424,21 @@ def test_no_admin_rights_leaves_the_service_messages_standing(tmp_path):
 
     assert rows(tmp_path, "SELECT id, user_id FROM group_events") == [(700, 7)]
     assert len(result.events) == 1
+    # And the reader is told, because 1 join from service messages alone is a
+    # floor: Telegram suppresses them during exactly the bursts worth counting.
+    assert result.overview["admin_log"] is False
+
+
+def test_a_readable_admin_log_is_reported_as_read(tmp_path):
+    """The counterpart: empty is ambiguous on its own. A group with no
+    membership changes and a group whose log this account cannot read both
+    produce zero admin events, and only one of the two makes the counts a
+    total."""
+    client = linked_client([], admin_log=[])
+
+    result = scan(client, tmp_path)
+
+    assert result.overview["admin_log"] is True
 
 
 def test_the_admin_log_is_walked_until_it_returns_nothing(tmp_path):

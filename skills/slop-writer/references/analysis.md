@@ -30,7 +30,7 @@ still returns a number.
 
 `post_metrics` holds what one scan saw, and its counters are running totals:
 `views` is what a post had reached at that moment, not a property of the post.
-Four consequences.
+Five consequences.
 
 **Views grow with no freeze point.** A post keeps collecting views for as long
 as readers scroll past it on the way to newer posts — posts over a year old
@@ -53,6 +53,10 @@ age attached, and a young post's forwards are a floor, not a result.
 gone; nothing can be filled in retroactively. A post with one metrics row
 supports a total, never a trend — check the row count per post before
 reporting change over time.
+
+**A ranking compares snapshots, not posts.** Each row was measured when its
+post was last scraped, and the staler row is the *smaller* one: views kept
+arriving after it was taken. Run `refresh_posts` over a window before ranking it by a rate.
 
 ## Who is who in the group
 

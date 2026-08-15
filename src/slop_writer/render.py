@@ -20,6 +20,7 @@ rows instead, a model re-derives that relation on every read and sometimes gets
 it backwards.
 """
 
+import re
 from collections import Counter
 from datetime import UTC, datetime
 
@@ -68,6 +69,25 @@ def _rel_when(iso: str | None, now: datetime) -> str:
     return f"overdue {mag}" if overdue else f"in ~{mag}"
 
 
+#: A Telegram username: 5-32 of [A-Za-z0-9_], starting with a letter. Used to
+#: decide whether a label is a handle worth prefixing, so it is deliberately
+#: strict — a title, a t.me link and a numeric id all fail it.
+_USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}\Z")
+
+
+def _handle(label: str) -> str:
+    """A handle with its `@`, restored for display.
+
+    `server.normalize_channel` strips it because `@chan` and `chan` are one
+    channel and the DB filename comes off the stripped form. That is identity;
+    a heading is display, so it comes back here — one place, so the CLI and the
+    server render one line rather than two.
+
+    Username-shaped labels only: a group title, a `t.me/...` link and a numeric
+    id reach the same heading, and prefixing those asserts something false."""
+    return f"@{label}" if _USERNAME.fullmatch(label) else label
+
+
 def _query_cell(value, truncate: bool = True) -> str:
     if value is None:
         return ""
@@ -111,7 +131,7 @@ def summarize_query(
 
 def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> str:
     """Render an LLM-oriented summary of a scrape run."""
-    out = [f"\n# Scrape summary: {channel}\n"]
+    out = [f"\n# Scrape summary: {_handle(channel)}\n"]
     if not posts:
         out.append("No posts fetched.")
         return "\n".join(out)
@@ -239,7 +259,7 @@ def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> s
 
 def summarize_subscribers(channel: str, rows: dict[str, dict]) -> str:
     """Render an LLM-oriented summary of subscriber dynamics."""
-    out = [f"\n# Subscriber summary: {channel}\n"]
+    out = [f"\n# Subscriber summary: {_handle(channel)}\n"]
     dates = sorted(rows)
     if not dates:
         out.append("No subscriber data.")
@@ -285,7 +305,7 @@ def summarize_subscribers(channel: str, rows: dict[str, dict]) -> str:
 
 def summarize_scheduled(channel: str, items: list[dict]) -> str:
     """Render the scheduled-post queue, one block per post."""
-    out = [f"\n# Scheduled posts: {channel}\n"]
+    out = [f"\n# Scheduled posts: {_handle(channel)}\n"]
     if not items:
         out.append("No scheduled posts in the queue.")
         return "\n".join(out)
@@ -339,7 +359,7 @@ def summarize_schedule(channel: str, item: dict, action: str = "Scheduled") -> s
     now = datetime.now(UTC)
     when = (item.get("date") or "")[:16].replace("T", " ") or "no date"
     rel = _rel_when(item.get("date"), now)
-    out = [f"\n# {action} post: {channel}\n"]
+    out = [f"\n# {action} post: {_handle(channel)}\n"]
     out.append(f"- Publishes: {when} UTC ({rel})")
     if item.get("requested"):
         out.append(f"- Requested: {item['requested']}")
@@ -372,7 +392,7 @@ def summarize_views(
     channel: str, hours: list, views: list, period_start: str, period_end: str
 ) -> str:
     """Render an LLM-oriented summary of views-per-hour."""
-    out = [f"\n# Views by hour of day: {channel}\n"]
+    out = [f"\n# Views by hour of day: {_handle(channel)}\n"]
     pairs = [(int(h), _as_number(v)) for h, v in zip(hours, views)]
     if not pairs:
         out.append("No views-by-hour data.")
@@ -423,7 +443,7 @@ def summarize_group(
     `messages` includes thread roots (is_thread_root=1); every engagement
     figure below excludes them — roots carry the channel post's reactions.
     """
-    out = [f"\n# Group summary: {label}\n"]
+    out = [f"\n# Group summary: {_handle(label)}\n"]
     if not messages and not events:
         out.append("No group messages or events in the scanned window.")
         return "\n".join(out)
@@ -449,6 +469,18 @@ def summarize_group(
     out.append(f"- Joins: {_via_breakdown(events, 'join')}  |  "
                f"Leaves: {_via_breakdown(events, 'leave')}  |  "
                f"net {len(joins) - len(leaves):+d}")
+    # Absent (rather than False) means a caller built this dict by hand and does
+    # not know; claiming "service messages only" there would be an assertion.
+    if overview.get("admin_log") is None:
+        pass
+    elif overview["admin_log"]:
+        out.append("- Event source: admin log (~48h retention) + service "
+                   "messages — complete for that window.")
+    else:
+        out.append("- Event source: service messages only (no admin rights on "
+                   "this group) — **these counts are a floor, not a total**: "
+                   "Telegram suppresses service messages during join bursts, "
+                   "which is exactly when a CTA post is working.")
     if overview.get("standalone"):
         out.append("- Standalone mode: thread linkage skipped.")
 
