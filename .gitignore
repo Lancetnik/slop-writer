@@ -35,6 +35,9 @@ node_modules/
 .agents
 .claude/skills/
 skills-lock.json
+# Agent worktrees: real checkouts of this repo, which `git add -A` would
+# otherwise stage as gitlinks pointing at commits no clone can resolve.
+.claude/worktrees/
 
 .codegraph
 
