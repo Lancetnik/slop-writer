@@ -49,7 +49,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from telethon.errors import FloodWaitError
 
 from . import __version__
-from .db import data_dir
+from .db import data_dir, scraped_channels
 from .errors import SlopWriterError
 from .group import scan_group
 from .publish import edit_post, parse_schedule_time, prepare_schedule, render_body
@@ -115,6 +115,31 @@ _SETUP_HINT = (
     "Telegram's login prompts for an SMS code on a TTY, so it cannot be "
     "completed from a tool call."
 )
+
+
+def _resolve_hint(output_dir: Path) -> str:
+    """A handle that names nothing is answered with the ones that do.
+
+    Which channels exist is a fact about the *caller*, not about the Telegram
+    lookup that failed, so it is attached here rather than in `resolve_peer` —
+    the same split as `_SETUP_HINT`, and the seam a hosted server replaces
+    with a tenant lookup while `tg.py` stays untouched.
+
+    It replaces the domain's "check the handle for typos", which is the wrong
+    remedy for the agent that had no handle to begin with: #41 watched five of
+    thirteen sessions answer that question by reading `.tg-analytic/`, one of
+    them out of a neighbouring checkout."""
+    channels = scraped_channels(output_dir)
+    if not channels:
+        return (
+            "Ask the user which channel they mean, then scrape it — this "
+            "project has no channel data yet."
+        )
+    return (
+        "Retry with one of the channels this project has data for: "
+        f"{', '.join(channels)}. A private group also resolves only for an "
+        "account that has already seen it."
+    )
 
 
 def normalize_channel(handle: str) -> str:
@@ -199,7 +224,9 @@ def _payload(code: str, message: str, hint: str | None, **extra) -> str:
     )
 
 
-def _guarded(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+def _guarded(
+    output_dir: Path,
+) -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
     """Turn every failure into the `{code, message, hint}` contract.
 
     Raising (rather than returning) is what sets `isError: true`; the SDK
@@ -207,42 +234,62 @@ def _guarded(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]
     the tail of the string rather than the whole of it. That prefix is the one
     concession — the JSON itself crosses verbatim.
 
+    Takes `output_dir` because two of the codes are answered by the
+    *entrypoint* rather than by the domain that raised them: the setup pair
+    with `slop-writer init`, and `CANNOT_RESOLVE` with the channels this
+    project holds. Both are facts about where the server runs, which no raise
+    site under `slop_writer` is allowed to know.
+
     `functools.wraps` matters beyond tidiness: FastMCP derives the tool's
     input schema from `inspect.signature`, which follows `__wrapped__`."""
 
-    @functools.wraps(fn)
-    async def wrapper(*args, **kwargs) -> str:
-        try:
-            return await fn(*args, **kwargs)
-        except SlopWriterError as exc:
-            hint = _SETUP_HINT if exc.code in _SETUP_CODES else exc.hint
-            raise ToolError(
-                _payload(exc.code or "INTERNAL", exc.message, hint)
-            ) from None
-        except FloodWaitError as exc:
-            # Telethon raises this from any call, at any depth, so the boundary
-            # is the only place that can name it once.
-            raise ToolError(
-                _payload(
-                    "FLOOD_WAIT",
-                    f"Telegram rate-limited this account for {exc.seconds}s.",
-                    "Wait it out and retry; narrow the selection to ask for less.",
-                    seconds=exc.seconds,
+    def decorator(
+        fn: Callable[..., Awaitable[str]],
+    ) -> Callable[..., Awaitable[str]]:
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs) -> str:
+            try:
+                return await fn(*args, **kwargs)
+            except SlopWriterError as exc:
+                if exc.code in _SETUP_CODES:
+                    hint = _SETUP_HINT
+                elif exc.code == "CANNOT_RESOLVE":
+                    hint = _resolve_hint(output_dir)
+                else:
+                    hint = exc.hint
+                raise ToolError(
+                    _payload(exc.code or "INTERNAL", exc.message, hint)
+                ) from None
+            except FloodWaitError as exc:
+                # Telethon raises this from any call, at any depth, so the
+                # boundary is the only place that can name it once.
+                raise ToolError(
+                    _payload(
+                        "FLOOD_WAIT",
+                        f"Telegram rate-limited this account for {exc.seconds}s.",
+                        "Wait it out and retry; narrow the selection to ask "
+                        "for less.",
+                        seconds=exc.seconds,
+                    )
+                ) from None
+            except Exception as exc:
+                # Traceback to stderr for the human; a contract-shaped payload
+                # for the model, which can do nothing with a traceback anyway.
+                log.exception(
+                    "unhandled error in %s", getattr(fn, "__name__", "tool")
                 )
-            ) from None
-        except Exception as exc:
-            # Traceback to stderr for the human; a contract-shaped payload for
-            # the model, which can do nothing with a traceback anyway.
-            log.exception("unhandled error in %s", getattr(fn, "__name__", "tool"))
-            raise ToolError(
-                _payload(
-                    "INTERNAL",
-                    f"{type(exc).__name__}: {exc}",
-                    "Unexpected failure — the server's stderr has the traceback.",
-                )
-            ) from None
+                raise ToolError(
+                    _payload(
+                        "INTERNAL",
+                        f"{type(exc).__name__}: {exc}",
+                        "Unexpected failure — the server's stderr has the "
+                        "traceback.",
+                    )
+                ) from None
 
-    return wrapper
+        return wrapper
+
+    return decorator
 
 
 async def assert_text_only(mcp: FastMCP) -> None:
@@ -287,7 +334,8 @@ def build_server(project_root: Path) -> FastMCP:
         """The only registration path. Pins the two things a per-tool decision
         would eventually get wrong: text-only output, and the error contract."""
         def decorator(fn):
-            return mcp.tool(structured_output=False, **kwargs)(_guarded(fn))
+            guarded = _guarded(output_dir)(fn)
+            return mcp.tool(structured_output=False, **kwargs)(guarded)
         return decorator
 
     def _session() -> None:

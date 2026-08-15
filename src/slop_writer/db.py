@@ -200,6 +200,21 @@ def db_path_for(output_dir: Path, channel: str) -> Path:
     return output_dir / f"{safe}.db"
 
 
+def scraped_channels(output_dir: Path) -> list[str]:
+    """The channels this project holds data for, one per DB file.
+
+    The inverse of `db_path_for`, and beside it so the
+    `.tg-analytic/<channel>.db` layout stays the knowledge of one module.
+    Touches no database and needs no session: a project can say which
+    channels it knows before Telegram is reachable at all, which is what
+    lets a resolve failure answer with them (#43).
+
+    Sorted, so the string a caller builds out of this is stable run to run."""
+    if not output_dir.is_dir():
+        return []
+    return sorted(path.stem for path in output_dir.glob("*.db"))
+
+
 def _drop_legacy_tables(conn: sqlite3.Connection) -> None:
     """Self-heal DB files created before the post_comments merge.
 
