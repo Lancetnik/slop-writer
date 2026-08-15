@@ -1,9 +1,17 @@
-"""Telegram channel analytics.
+"""Telegram channel analytics — the library behind the slop-writer skill.
 
-This release exports nothing on purpose. It exists to prove the packaging and
-publishing loop end to end — build, trusted-publish, resolve from PyPI — while
-that loop is the only variable. The domain modules (`db`, `tg`, `render`,
-`markdown`, `group`) move here next, once the loop is known to work.
+Nothing is re-exported here on purpose. Import the module you need:
+
+    from slop_writer.db import open_db, data_dir   # stdlib only
+    from slop_writer.tg import channel_session     # pulls Telethon
+    from slop_writer.render import summarize_scrape
+    from slop_writer.markdown import render        # pulls mistune
+    from slop_writer.group import classify_service_message
+
+A star-shaped `__init__` would make `import slop_writer.db` drag Telethon and
+mistune in behind it, and the Telegram-free half of this package — the schema,
+the SQL helpers, the group classification — is exactly what a query tool or a
+test wants without a client.
 
 `__version__` is read from the installed distribution metadata rather than
 written here, so `pyproject.toml` stays the single place a version is declared.

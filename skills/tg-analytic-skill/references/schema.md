@@ -2,7 +2,7 @@
 
 Read this before writing SQL through `tg_query.py`. One SQLite file per channel — leading `@` is stripped from the filename. **There is no `channel` column anywhere** — the channel is implicit in which DB you opened. Don't `WHERE channel = ...`.
 
-The literal `CREATE` statements below restate the `SCHEMA` and `FTS_SCHEMA` constants in `scripts/utils/_common.py` (the source of truth) — every column the agent can SELECT, JOIN, or filter on appears there. Notes underneath each table cover only what the DDL can't convey (storage format, semantics, gotchas).
+The literal `CREATE` statements below restate the `SCHEMA` and `FTS_SCHEMA` constants in the `slop-writer` package's `db.py` (the source of truth) — every column the agent can SELECT, JOIN, or filter on appears there. Notes underneath each table cover only what the DDL can't convey (storage format, semantics, gotchas).
 
 ## Full schema at a glance
 

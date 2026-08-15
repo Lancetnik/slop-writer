@@ -1,7 +1,7 @@
 # Post markup reference
 
 Read this before writing a post body for `tg_publish.py`
-(`schedule`/`edit`). The body is a Markdown file; `_md2entities.py` walks
+(`schedule`/`edit`). The body is a Markdown file; `slop_writer/markdown.py` walks
 mistune's AST straight to Telegram `MessageEntity` offsets — there is **no HTML
 step**, so HTML tags are not interpreted (write Markdown, not `<b>`).
 

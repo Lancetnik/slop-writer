@@ -1,6 +1,7 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = [
+#     "slop-writer>=0.1,<0.2",
 #     "telethon>=1.36,<2",
 #     "python-dotenv>=1.0",
 #     "typer>=0.12,<1",
@@ -13,7 +14,7 @@ import re
 import sqlite3
 from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -43,20 +44,14 @@ from telethon.tl.types import (
     StatsGraphAsync,
 )
 
-from utils._common import (
-    DATA_DIR,
-    DEFAULT_OUTPUT_DIR,
+from slop_writer.db import (
+    data_dir,
     db_path_for,
+    env_path,
     heal_album_phantoms,
     open_db,
 )
-from utils._tg import (
-    DEFAULT_SESSION,
-    _require_session,
-    _resolve_peer,
-    channel_session,
-)
-from utils._group import (
+from slop_writer.group import (
     GroupEvent,
     auto_forward_post_id,
     classify_admin_log_event,
@@ -64,15 +59,29 @@ from utils._group import (
     thread_post_id_for,
     unresolved_root_refs,
 )
-from utils._render import (
+from slop_writer.render import (
     summarize_group,
     summarize_scheduled,
     summarize_scrape,
     summarize_subscribers,
     summarize_views,
 )
+from slop_writer.tg import (
+    _require_session,
+    _resolve_peer,
+    channel_session,
+    session_path,
+)
 
-load_dotenv(DATA_DIR / ".env")
+# The CLI layer is where "the project root" gets decided: it is the directory
+# the user launched from, never the skill's install location. The library takes
+# it as an argument and assumes nothing.
+PROJECT_ROOT = Path.cwd()
+DEFAULT_OUTPUT_DIR = data_dir(PROJECT_ROOT)
+DEFAULT_SESSION = str(session_path(PROJECT_ROOT))
+LOGIN_COMMAND = f"uv run {Path(__file__).resolve()} login"
+
+load_dotenv(env_path(PROJECT_ROOT))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,9 +92,6 @@ logging.basicConfig(
 # LLM consuming the output - keep only warnings/errors from it.
 logging.getLogger("telethon").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
-
-# `datetime.UTC` is 3.11+; alias it from `timezone.utc` for 3.10 compatibility.
-UTC = timezone.utc
 
 # Per-post progress prints every Nth post at INFO; per-post lines go to DEBUG.
 PROGRESS_EVERY = 50
@@ -1595,7 +1601,7 @@ VerboseOpt = Annotated[
 
 def _prepare(session_file: str, verbose: bool = False) -> None:
     """Shared command preamble: a session must exist; -v raises log verbosity."""
-    _require_session(session_file)
+    _require_session(session_file, LOGIN_COMMAND)
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
         logging.getLogger("telethon").setLevel(logging.INFO)

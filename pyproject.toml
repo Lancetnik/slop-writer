@@ -1,6 +1,6 @@
 [project]
 name = "slop-writer"
-version = "0.0.1"
+version = "0.1.0"
 description = "Telegram channel analytics: the library behind the slop-writer skill, and later its MCP server."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,10 +15,21 @@ classifiers = [
     "Topic :: Communications :: Chat",
 ]
 
-# Deliberately empty: this release contains no code, so it depends on nothing.
-# The real set (telethon, python-dotenv, typer, mistune) arrives in 0.1.0 with
-# the modules that need it.
-dependencies = []
+# One flat set, no extras (#13). Not every module needs all four — `db` and
+# `group` are stdlib-only, `markdown` is the sole mistune user — but splitting
+# them into extras buys a few MB at the cost of every caller having to know
+# which extra a module lives behind. Revisit if the set grows heavy.
+#
+# python-dotenv is deliberately absent: nothing here reads a .env file. `tg.py`
+# reads os.environ and the *caller* populates it, so dotenv stays a dependency
+# of the scripts that call load_dotenv. `typer` is here only because tg.py
+# still reports errors with typer.echo/typer.Exit — that CLI coupling is what
+# the domain-core extraction removes.
+dependencies = [
+    "telethon>=1.36,<2",
+    "typer>=0.12,<1",
+    "mistune>=3.0",
+]
 
 [project.urls]
 Repository = "https://github.com/Lancetnik/slop-writer"

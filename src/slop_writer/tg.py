@@ -1,9 +1,9 @@
 """Telethon session + credential plumbing shared by the write/read scripts.
 
-Lives apart from `_common.py` on purpose: `_common` is stdlib-only so
-`tg_query.py` keeps its empty-dependencies property, whereas everything here
-imports Telethon. Both `tg_scrape.py` (reads) and `tg_publish.py` (the one
-write path) import these helpers so the connect/auth dance has a single home.
+Lives apart from `db.py` on purpose: `db` is stdlib-only so `tg_query.py`
+keeps its Telegram-free property, whereas everything here imports Telethon.
+Both `tg_scrape.py` (reads) and `tg_publish.py` (the one write path) import
+these helpers so the connect/auth dance has a single home.
 """
 import os
 from contextlib import asynccontextmanager
@@ -18,14 +18,7 @@ from telethon.errors import (
 )
 from telethon.tl.types import User
 
-from ._common import DATA_DIR
-
-DEFAULT_SESSION_FILE = DATA_DIR / "session.session"
-DEFAULT_SESSION = str(DEFAULT_SESSION_FILE)
-
-# `login` lives in tg_scrape.py; point users there regardless of which script
-# tripped the missing-session check. One level up from this utils package.
-_LOGIN_SCRIPT = Path(__file__).resolve().parent.parent / "tg_scrape.py"
+from .db import DATA_DIR_NAME, data_dir
 
 # Setup is a separate, user-run skill: an agent that hits one of the errors
 # below must hand the work back to the human rather than try to log in itself
@@ -34,12 +27,21 @@ _LOGIN_SCRIPT = Path(__file__).resolve().parent.parent / "tg_scrape.py"
 _SETUP_SKILL = "setup-tg-analytic"
 
 
+def session_path(project_root: Path) -> Path:
+    """The Telethon session file for a project. One login per project root."""
+    return data_dir(project_root) / "session.session"
+
+
 def _credentials() -> tuple[int, str, str]:
     """Read TG_API_ID / TG_API_HASH / TG_PHONE lazily, at connect time.
 
     Reading them at import time would crash even `--help` with a bare KeyError
     when .tg-analytic/.env doesn't exist yet; deferring turns that into a
-    clear, actionable message on the first command that actually connects."""
+    clear, actionable message on the first command that actually connects.
+
+    The message names the env file by the rule (`<project root>/.tg-analytic/
+    .env`) rather than as a resolved path: whoever loaded the environment knows
+    the project root, this function only knows what it found in `os.environ`."""
     try:
         return (
             int(os.environ["TG_API_ID"]),
@@ -52,7 +54,8 @@ def _credentials() -> tuple[int, str, str]:
             f"Setup is a human step: ask the user to run the `/{_SETUP_SKILL}` "
             "skill (once per project), then stop.\n"
             "Doing it yourself: create an app at https://my.telegram.org/apps "
-            f"and put TG_API_ID/TG_API_HASH/TG_PHONE in {DATA_DIR / '.env'}.",
+            "and put TG_API_ID/TG_API_HASH/TG_PHONE in "
+            f"{DATA_DIR_NAME}/.env under the project root you run from.",
             err=True,
         )
         raise typer.Exit(code=1) from None
@@ -63,12 +66,17 @@ def make_client(session_file: str) -> TelegramClient:
     return TelegramClient(str(session_file), api_id, api_hash)
 
 
-def _require_session(session_file: str) -> None:
+def _require_session(session_file: str, login_command: str) -> None:
     """Fail fast if no Telethon session exists.
 
     Auth needs an interactive TTY for the SMS code prompt, so it cannot run
     inside a Bash subprocess. Surface that with a clear message instead of
-    deadlocking on input()."""
+    deadlocking on input().
+
+    `login_command` is what the user should type to fix it, and has no default
+    on purpose: only the caller knows how it was invoked. This module ships
+    inside an installed package, so it cannot point at a script path of its
+    own — one derived from `__file__` here would name site-packages."""
     if not Path(session_file).exists():
         # Print the real path — the skill installs under varying roots
         # (.claude/skills/, .agents/skills/, the source repo), so a hardcoded
@@ -78,8 +86,8 @@ def _require_session(session_file: str) -> None:
             f"Setup is a human step: ask the user to run the `/{_SETUP_SKILL}` "
             "skill, then stop — `login` prompts for an SMS code on a TTY and "
             "hangs when launched from a tool call.\n"
-            f"Doing it yourself, at a real terminal: `uv run {_LOGIN_SCRIPT} "
-            "login` from the project root.",
+            f"Doing it yourself, at a real terminal: `{login_command}` "
+            "from the project root.",
             err=True,
         )
         raise typer.Exit(code=1)

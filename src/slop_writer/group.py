@@ -1,8 +1,7 @@
 """Discussion-group scan logic: service-message classification and thread
 linkage. Stdlib-only and duck-typed over Telethon objects — dispatch is on
-`type(action).__name__`, attribute access via getattr — so tg_query.py's
-empty-deps sibling property holds and the module stays importable without
-Telethon installed.
+`type(action).__name__`, attribute access via getattr — so the module stays
+importable, and its classification testable, without Telethon installed.
 """
 
 from dataclasses import dataclass

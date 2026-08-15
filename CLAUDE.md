@@ -16,24 +16,6 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     (`schedule`/`reschedule`/`edit`). Isolated from the read scripts on purpose
     (docs/adr/0003).
   - `scripts/tg_query.py` — read-only SQL CLI over the per-channel SQLite DB.
-  - `scripts/utils/` — support **package** for the CLIs, imported as `utils.*`
-    (e.g. `from utils._common import …`); resolves because `scripts/` is on
-    `sys.path`. Modules import each other relatively (`from ._common import …`).
-    - `_common.py` — shared paths, the `SCHEMA` + `FTS_SCHEMA` constants
-      (**source of truth** for the DB layout), and DB open helpers.
-      Stdlib-only so `tg_query.py` keeps its empty-dependencies property.
-    - `_tg.py` — Telethon session/credential plumbing (`_credentials`,
-      `make_client`, `channel_session`, `_require_session`, `_resolve_peer`)
-      shared by
-      `tg_scrape.py` and `tg_publish.py`. Telethon-dependent, so kept out of
-      stdlib-only `_common.py`.
-    - `_render.py` — pure-presentation Markdown renderers (`summarize_*`);
-      plain dicts in, stdout out — no Telethon or SQLite types.
-    - `_md2entities.py` — `tg_publish.py` only: walks mistune's Markdown AST
-      straight to Telethon `MessageEntity` objects (no HTML, no sulguk). Tables
-      render as monospace `pre`; UTF-16 offset accounting lives here.
-    - `_group.py` — discussion-group service/admin-log classification helpers
-      used by `tg_scrape.py group`.
   - `references/scraping.md` / `querying.md` / `publishing.md` — one per CLI,
     each the target of one row in `SKILL.md`'s branch table: flags, worked
     examples, and that CLI's failure modes co-located with the command they
@@ -48,21 +30,47 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   `.tg-analytic/.env`, hands the TTY login to the user. The CLIs name it in
   their missing-credentials/session errors, so the agent knows to stop and ask
   rather than attempt an interactive login.
+- `src/slop_writer/` — the **library the CLIs import**, published to PyPI as
+  `slop-writer`. The scripts name it in their PEP-723 headers
+  (`slop-writer>=0.1,<0.2`), so `uv run` fetches it from the index; nothing is
+  vendored into the skill directory. Modules import each other relatively
+  (`from .db import …`).
+  - `db.py` — paths, the `SCHEMA` + `FTS_SCHEMA` constants (**source of truth**
+    for the DB layout), and DB open helpers. **Stdlib-only**, so importing it
+    doesn't drag Telethon in.
+  - `tg.py` — Telethon session/credential plumbing (`_credentials`,
+    `make_client`, `channel_session`, `_require_session`, `_resolve_peer`,
+    `session_path`) shared by `tg_scrape.py` and `tg_publish.py`.
+    Telethon-dependent, so kept out of stdlib-only `db.py`.
+  - `render.py` — pure-presentation Markdown renderers (`summarize_*`); plain
+    dicts in, stdout out — no Telethon or SQLite types.
+  - `markdown.py` — `tg_publish.py` only: walks mistune's Markdown AST straight
+    to Telethon `MessageEntity` objects (no HTML, no sulguk). Tables render as
+    monospace `pre`; UTF-16 offset accounting lives here.
+  - `group.py` — discussion-group service/admin-log classification helpers used
+    by `tg_scrape.py group`. Stdlib-only and duck-typed over Telethon objects.
 - `tools/check_schema_doc.py` — **dev-only** drift guard, kept *outside* the
   skill so it isn't shipped to users; run after editing `SCHEMA` or
-  `references/schema.md`.
+  `references/schema.md`. Its PEP-723 header pins `slop-writer` to *this
+  checkout* (`[tool.uv.sources]`, editable), never to the released version —
+  a guard reading the published schema would pass while the tree disagrees.
 - `.tg-analytic/` — **runtime state at the project root** (cwd), gitignored:
   `.env`, `session.session`, one `<channel>.db` per channel, `media/`. The
-  scripts anchor this on `Path.cwd()`, so always run from the project root.
+  **CLIs** anchor this on `Path.cwd()` (`PROJECT_ROOT` at the top of each
+  script) and pass the derived paths in; `slop_writer` never reads the cwd
+  itself. Always run from the project root.
 
 ## Stack
 
-- Python ≥3.10, run via `uv run` (PEP-723 inline deps in each script header).
-  Shared helpers live in the `scripts/utils/` package; the CLIs import them as
-  `from utils._x import …`, which resolves because the script's own directory
-  (`scripts/`) is on `sys.path`.
+- Python ≥3.11, run via `uv run` (PEP-723 inline deps in each script header).
+  Shared helpers live in the published `slop-writer` package (`src/`); the CLIs
+  import them as `from slop_writer.x import …`. Each script also declares what
+  it imports *directly* — the package dependency is not a licence to drop them.
+  For local development, pass `--with-editable .` to run against the working
+  tree (it layers over the resolved release; the version pin still has to be
+  satisfiable from the index).
 - **mistune** — `tg_publish.py` only: parses the Markdown post body to an AST,
-  which `_md2entities.py` walks straight to Telethon `MessageEntity` objects (no
+  which `slop_writer/markdown.py` walks straight to Telethon `MessageEntity` objects (no
   HTML hop, no sulguk). mistune (CommonMark-ish) over Python-Markdown on
   purpose: it keeps `#hashtag` lines literal instead of parsing them as `<h1>`,
   and lets a list interrupt a paragraph without a blank line. Pure-Python, zero
@@ -90,7 +98,7 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
 
 | Command | Does | Needs |
 | --- | --- | --- |
-| `schedule` | queue a Markdown post (body from `--file` or stdin) to publish at `--at`; Markdown→Telethon entities via `_md2entities`; `--photo` (repeatable, ≤10 → album) attaches images, body becomes the caption (may be empty; length caps enforced by Telegram — 1024/2048 Premium — not the CLI); `--caption-above` puts it on top via an `invert_media` monkey patch (Telethon v1 won't expose it, see #4410); prints confirmation, no DB write | **post rights** + session |
+| `schedule` | queue a Markdown post (body from `--file` or stdin) to publish at `--at`; Markdown→Telethon entities via `slop_writer.markdown`; `--photo` (repeatable, ≤10 → album) attaches images, body becomes the caption (may be empty; length caps enforced by Telegram — 1024/2048 Premium — not the CLI); `--caption-above` puts it on top via an `invert_media` monkey patch (Telethon v1 won't expose it, see #4410); prints confirmation, no DB write | **post rights** + session |
 | `reschedule` | move scheduled post `--id` to a new `--at` (body unchanged); re-applies the 1h floor | **post rights** + session |
 | `edit` | replace scheduled post `--id`'s body (from `--file` or stdin, time unchanged); **no** floor check | **post rights** + session |
 
@@ -122,7 +130,7 @@ Scrape selection flags are mutually exclusive; default to `--latest N`
   phantom row was silent — Telegram reports views/forwards on every album
   member — and doubled the album in every `SUM`/`AVG`. `fetch` passes
   `window_contiguous=False` because arbitrary ids can't prove an album whole.
-  `heal_album_phantoms` (in `_common.py`, run from `open_db` and again after a
+  `heal_album_phantoms` (in `slop_writer/db.py`, run from `open_db` and again after a
   scrape) deletes rows left by pre-fix runs, and `upsert_post` clears
   `post_attachments` by `attachment_id` as well as `post_id` so an attachment
   belongs to exactly one post.

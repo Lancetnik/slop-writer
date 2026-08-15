@@ -7,10 +7,7 @@ be pasted to the user as-is (see SKILL.md "Reporting back to the user").
 """
 
 from collections import Counter
-from datetime import datetime, timezone
-
-# `datetime.UTC` is 3.11+; alias it from `timezone.utc` for 3.10 compatibility.
-UTC = timezone.utc
+from datetime import UTC, datetime
 
 
 def _text_snippet(text: str | None, length: int = 80) -> str:

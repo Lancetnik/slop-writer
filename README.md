@@ -92,13 +92,7 @@ skills/
     scripts/
       tg_scrape.py           Telethon read CLI (scrape, fetch, group, subscribers, views, scheduled).
       tg_publish.py          Telethon write CLI (schedule, reschedule, edit).
-      tg_query.py            Stdlib-only read-only SQL CLI.
-      utils/                 Support package imported by the CLIs as `utils.*`:
-        _common.py             Shared paths, DB schema (source of truth), open helpers.
-        _tg.py                 Telethon session/credential plumbing.
-        _render.py             Markdown renderers for the per-command summaries.
-        _md2entities.py        Markdown -> Telethon MessageEntity (tg_publish).
-        _group.py              Discussion-group classification helpers.
+      tg_query.py            Read-only SQL CLI.
     references/
       scraping.md     tg_scrape.py commands and selection flags.
       querying.md     tg_query.py usage and search patterns.
@@ -107,8 +101,20 @@ skills/
       markup.md       Supported Markdown -> Telegram markup for tg_publish.
   setup-tg-analytic/
     SKILL.md          One-time credential + login setup, run by the user.
+src/
+  slop_writer/        The library the CLIs import, published to PyPI. The three
+                      scripts above declare `slop-writer` in their PEP-723
+                      headers, so `uv run` fetches it — nothing is vendored
+                      into the skill directory.
+    db.py             DB schema (source of truth), paths, open helpers. Stdlib only.
+    tg.py             Telethon session/credential plumbing.
+    render.py         Markdown renderers for the per-command summaries.
+    markdown.py       Markdown -> Telethon MessageEntity (tg_publish).
+    group.py          Discussion-group classification helpers. Stdlib only.
 tools/
-  check_schema_doc.py  Dev-only: guard SCHEMA <-> references/schema.md drift (not shipped).
+  check_schema_doc.py  Dev-only: guard SCHEMA <-> references/schema.md drift (not
+                       shipped). Pinned to this checkout, not to the released
+                       package, so it guards the working tree.
 ```
 
 Runtime state (`.env`, the Telethon session, per-channel `*.db` files, media)

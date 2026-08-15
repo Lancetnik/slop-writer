@@ -1,6 +1,8 @@
 # /// script
-# requires-python = ">=3.10"
-# dependencies = []
+# requires-python = ">=3.11"
+# dependencies = [
+#     "slop-writer>=0.1,<0.2",
+# ]
 # ///
 import argparse
 import logging
@@ -10,7 +12,11 @@ import sys
 from contextlib import closing
 from pathlib import Path
 
-from utils._common import DEFAULT_OUTPUT_DIR, db_path_for
+from slop_writer.db import data_dir, db_path_for
+
+# The CLI layer decides what "the project root" is: the directory the user
+# launched from. `slop_writer.db` itself never reads the cwd.
+DEFAULT_OUTPUT_DIR = data_dir(Path.cwd())
 
 logging.basicConfig(
     level=logging.INFO,

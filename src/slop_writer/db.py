@@ -1,12 +1,16 @@
-"""Shared data home: runtime paths, the SQLite schema, and DB open helpers.
+"""Runtime paths, the SQLite schema, and DB open helpers.
 
-Part of the `utils` package; the CLIs import it as `from utils._common import …`
-(`scripts/` is on sys.path), and siblings here import it relatively.
-Must stay stdlib-only so tg_query.py keeps its empty-dependencies property.
+Stdlib-only, and deliberately so: importing this module must not drag Telethon
+in. That keeps `tg_query.py` free of Telegram machinery and lets a future MCP
+server touch the DB without a client.
+
+Nothing here reads the current working directory. Every path is derived from a
+project root the caller passes in — the CLIs default that to `Path.cwd()`,
+a server would take it from its configuration.
 
 The SCHEMA and FTS_SCHEMA constants below are the single source of truth for
 the DB layout. references/schema.md restates them for the SQL-writing agent —
-run tools/check_schema_doc.py (dev-only, at the repo root) after editing
+run tools/check_schema_doc.py (dev-only, in the source repo) after editing
 either side to catch drift.
 """
 
@@ -14,10 +18,19 @@ import logging
 import sqlite3
 from pathlib import Path
 
-# Runtime state anchors on the *current working directory* (the project root
-# the user launches from), never on the skill's install location.
-DATA_DIR = Path.cwd() / ".tg-analytic"
-DEFAULT_OUTPUT_DIR = DATA_DIR
+# Runtime state lives under the *project* root the caller names, never under
+# the skill's install location.
+DATA_DIR_NAME = ".tg-analytic"
+
+
+def data_dir(project_root: Path) -> Path:
+    """The runtime state directory (DB files, media, session, .env)."""
+    return project_root / DATA_DIR_NAME
+
+
+def env_path(project_root: Path) -> Path:
+    """Where the Telegram credentials live for this project."""
+    return data_dir(project_root) / ".env"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS posts (

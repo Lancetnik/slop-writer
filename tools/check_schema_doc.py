@@ -1,9 +1,18 @@
 # /// script
-# requires-python = ">=3.10"
-# dependencies = []
+# requires-python = ">=3.11"
+# dependencies = ["slop-writer"]
+#
+# # Pinned to *this checkout*, not to PyPI, and unversioned for the same
+# # reason: a drift guard that read the published schema would compare the
+# # docs against whatever was last released and pass while the working tree
+# # disagrees. uv resolves this path relative to the script file, so it holds
+# # from any cwd. Only the source repo runs this, so the local pin costs
+# # nothing.
+# [tool.uv.sources]
+# slop-writer = { path = "../", editable = true }
 # ///
 """Guard against drift between SCHEMA + FTS_SCHEMA (the source of truth,
-in _common.py) and the DDL that references/schema.md restates for the
+in slop_writer/db.py) and the DDL that references/schema.md restates for the
 SQL-writing agent.
 
 Dev-only tooling: skill *users* never run this. It guards the source tree
@@ -23,14 +32,12 @@ import re
 import sys
 from pathlib import Path
 
-SKILL_SCRIPTS = (
-    Path(__file__).resolve().parent.parent
-    / "skills" / "tg-analytic-skill" / "scripts"
-)
-sys.path.insert(0, str(SKILL_SCRIPTS))
-from utils._common import FTS_SCHEMA, SCHEMA  # noqa: E402
+from slop_writer.db import FTS_SCHEMA, SCHEMA
 
-SCHEMA_MD = SKILL_SCRIPTS.parent / "references" / "schema.md"
+SCHEMA_MD = (
+    Path(__file__).resolve().parent.parent
+    / "skills" / "tg-analytic-skill" / "references" / "schema.md"
+)
 
 
 def normalize(stmt: str) -> str:
@@ -79,7 +86,10 @@ def main() -> int:
         print(f"NOT IN schema.md:\n  {s}\n", file=sys.stderr)
     for s in sorted(stale):
         print(f"STALE in schema.md (not in SCHEMA):\n  {s}\n", file=sys.stderr)
-    print("Fix references/schema.md (or _common.py SCHEMA) and re-run.", file=sys.stderr)
+    print(
+        "Fix references/schema.md (or slop_writer/db.py SCHEMA) and re-run.",
+        file=sys.stderr,
+    )
     return 1
 
 

@@ -1,10 +1,10 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = [
+#     "slop-writer>=0.1,<0.2",
 #     "telethon>=1.36,<2",
 #     "python-dotenv>=1.0",
 #     "typer>=0.12,<1",
-#     "mistune>=3.0",
 # ]
 # ///
 """Publish-side CLI: queue a future channel post.
@@ -13,7 +13,7 @@ The skill's one *write* path, kept in its own script so "this code can post"
 is auditable at the file level (the read/scrape/query scripts never publish).
 See docs/adr/0003.
 
-Pipeline: Markdown --(_md2entities)--> plain text + Telethon MessageEntity list
+Pipeline: Markdown --(slop_writer.markdown)--> text + Telethon MessageEntity list
 --> client.send_message(schedule), or client.send_file(schedule) when --photo
 attaches images (the body becomes the caption; several photos form one album).
 Scheduling is an MTProto/user-client feature, so this rides the same Telethon
@@ -23,7 +23,7 @@ import asyncio
 import logging
 import sys
 from contextlib import contextmanager, nullcontext
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -38,12 +38,19 @@ from telethon.tl.functions.messages import (
 )
 from telethon.tl.types import Message
 
-from utils._common import DATA_DIR
-from utils._md2entities import render as render_markdown
-from utils._render import summarize_schedule
-from utils._tg import DEFAULT_SESSION, _require_session, channel_session
+from slop_writer.db import env_path
+from slop_writer.markdown import render as render_markdown
+from slop_writer.render import summarize_schedule
+from slop_writer.tg import _require_session, channel_session, session_path
 
-load_dotenv(DATA_DIR / ".env")
+# The CLI layer decides what "the project root" is — the directory the user
+# launched from. `login` lives in the sibling read CLI, so the fix-it hint
+# points there rather than at this script.
+PROJECT_ROOT = Path.cwd()
+DEFAULT_SESSION = str(session_path(PROJECT_ROOT))
+LOGIN_COMMAND = f"uv run {Path(__file__).resolve().parent / 'tg_scrape.py'} login"
+
+load_dotenv(env_path(PROJECT_ROOT))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,7 +65,6 @@ logging.getLogger("telethon").setLevel(logging.WARNING)
 logging.getLogger("telethon.client.messageparse").setLevel(logging.ERROR)
 log = logging.getLogger(__name__)
 
-UTC = timezone.utc
 
 # Hardcoded on purpose, with no CLI flag or env override: the guard exists to
 # stop the *agent* driving this CLI from scheduling a post too soon. A
@@ -451,7 +457,7 @@ def schedule(
     if caption_above and not text.strip():
         typer.echo("--caption-above needs a non-empty body to place above.", err=True)
         raise typer.Exit(code=2)
-    _require_session(session_file)
+    _require_session(session_file, LOGIN_COMMAND)
     asyncio.run(
         schedule_post(
             channel, text, entities, when, session_file, photos, caption_above
@@ -471,7 +477,7 @@ def reschedule(
     Same 1-hour floor as `schedule` (it sets a new publish time). Identify the
     post by its `sched-msg` id from `tg_scrape.py scheduled`."""
     when = _parse_when(at)
-    _require_session(session_file)
+    _require_session(session_file, LOGIN_COMMAND)
     asyncio.run(reschedule_post(channel, id, when, session_file))
 
 
@@ -488,7 +494,7 @@ def edit(
     `schedule` does. No 1-hour floor check — editing text never moves the
     publish time. Identify the post by its `sched-msg` id from `scheduled`."""
     text, entities = _render_markdown(file)
-    _require_session(session_file)
+    _require_session(session_file, LOGIN_COMMAND)
     asyncio.run(edit_post(channel, id, text, entities, session_file))
 
 
