@@ -1,8 +1,9 @@
-# tg-analytic-skill
+# slop-writer
 
-A Claude Code skill that scrapes a Telegram channel into a per-channel SQLite
-DB and answers analytics questions over it. It can also queue a future post to
-the channel (the one write capability; everything else only reads).
+An MCP server and a Claude Code skill that scrape a Telegram channel into a
+per-channel SQLite DB and answer analytics questions over it. They can also
+queue a future post to the channel (the one write capability; everything else
+only reads).
 
 ## Language
 

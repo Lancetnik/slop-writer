@@ -3,7 +3,8 @@
 A Claude Code **skill plus an MCP server** that analyze a Telegram channel (the
 author's own [@fastnewsdev](https://t.me/fastnewsdev)). The server's eleven
 tools are the whole agent-facing surface; the skill says which tool answers
-which question and what the numbers mean. **Two install channels** (#21), both
+which question and what the numbers mean — **docs/adr/0006** records that move
+and why the CLIs stopped being it. **Two install channels** (#21), both
 serving `skills/slop-writer/` from
 this repository: `uv tool install slop-writer` + `slop-writer install` (which
 copies the skill out of the wheel), and `npx skills@latest add ...`. No drift

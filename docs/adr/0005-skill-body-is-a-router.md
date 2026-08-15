@@ -88,5 +88,6 @@ descriptions, and a `references/` file per CLI stopped having a subject.
   and two of them (`schema.md`, `markup.md`) are unchanged from the first
   iteration.
 
-Still open: whether a separate ADR-0006 records the MCP move as a whole. This
+The move as a whole is recorded by
+[0006](./0006-the-shipped-artifact-is-a-package-driving-an-mcp-server.md); this
 amendment covers only what #30 changed about *this* decision.
