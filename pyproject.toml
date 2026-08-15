@@ -40,3 +40,19 @@ Issues = "https://github.com/Lancetnik/slop-writer/issues"
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
 build-backend = "uv_build"
+
+# PEP 735, not [project.optional-dependencies]: a dependency group is a
+# development-time concept the build backend never writes into wheel metadata,
+# so pytest cannot reach a user who installs `slop-writer`. An extra would.
+# CI asserts this against the built wheel rather than trusting the claim.
+[dependency-groups]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+# The suite must exercise *this checkout*, never the released package — the
+# same trap tools/check_schema_doc.py pins its own dependency against. `uv run
+# pytest` installs the project editable, and tests/test_packaging.py asserts
+# the result, so a stale wheel fails loudly instead of passing quietly.
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
