@@ -87,6 +87,13 @@ A tool that fails with a setup error tells you what the user must run. It is
 an interactive login on a terminal — Telegram prompts for an SMS code — so you
 cannot complete it from a tool call. Relay the instruction, stop, and wait.
 
+## When no channel is named
+
+Ask the user which channel they mean, and record the answer wherever your
+client keeps notes across sessions, so it is asked once rather than every
+session. `CANNOT_RESOLVE` names the channels this project has data for —
+retry with one of those.
+
 ## The write gate
 
 `publish_*` reaches a live channel. Run one only on an explicit instruction

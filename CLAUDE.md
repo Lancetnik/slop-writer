@@ -297,6 +297,14 @@ Non-obvious, and enforced in `server.py`:
   place a Telethon flood-wait can be caught once, and turns anything else into
   `INTERNAL` rather than a traceback. The SDK prefixes the text with
   `Error executing tool <name>: `; the JSON is the tail.
+- **Two hints belong to the entrypoint, not to the raise site**, which is why
+  `_guarded` is a factory taking the project's `output_dir`: the setup pair
+  answers with `slop-writer init` (`_SETUP_HINT`), and `CANNOT_RESOLVE`
+  answers with `db.scraped_channels()` — the channels this project holds
+  (#43). Both are facts about where the server runs, and the second replaces
+  the domain's "check the handle for typos", which is the wrong remedy for an
+  agent that never had a handle. A hosted server swaps `_resolve_hint` for a
+  tenant lookup and `tg.py` does not move.
 - **Argument validation failures are the one gap**: pydantic rejects a bad
   `select` arm *before* `_guarded` runs, so those come back as a pydantic
   message rather than the JSON contract.

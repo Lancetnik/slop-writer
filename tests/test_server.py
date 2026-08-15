@@ -28,6 +28,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from telethon.errors import FloodWaitError
 
+from slop_writer.db import data_dir
 from slop_writer.errors import ERROR_CODES, SlopWriterError
 from slop_writer.server import (
     SERVER_NAME,
@@ -334,12 +335,12 @@ def test_a_rejected_query_is_not_an_internal_error(server):
     assert payload["code"] in {"QUERY_REJECTED", "NO_DATA"}
 
 
-def test_a_flood_wait_carries_its_seconds(server):
+def test_a_flood_wait_carries_its_seconds(tmp_path):
     """Telethon raises this from any call at any depth, so the boundary is the
     only place it can be named once — and the number is what the model needs
     to decide between waiting and narrowing the request."""
 
-    @_guarded
+    @_guarded(data_dir(tmp_path))
     async def flooded():
         raise FloodWaitError(request=None)
 
@@ -350,11 +351,11 @@ def test_a_flood_wait_carries_its_seconds(server):
     assert "seconds" in payload
 
 
-def test_an_unexpected_exception_answers_in_the_contract(server):
+def test_an_unexpected_exception_answers_in_the_contract(tmp_path):
     """Even a bug answers as JSON: a traceback is something the model can do
     nothing with, and `isError` without a code breaks the branch."""
 
-    @_guarded
+    @_guarded(data_dir(tmp_path))
     async def broken():
         raise ZeroDivisionError("boom")
 
@@ -365,17 +366,60 @@ def test_an_unexpected_exception_answers_in_the_contract(server):
     assert "ZeroDivisionError" in payload["message"]
 
 
-def test_a_domain_hint_survives_when_it_is_not_a_setup_failure(server):
-    """Only `NO_CREDENTIALS`/`NO_SESSION` get the server's remedy swapped in;
-    every other hint is the domain's own and must cross untouched."""
+def test_a_domain_hint_survives_when_it_is_not_a_setup_failure(tmp_path):
+    """Only the setup pair and `CANNOT_RESOLVE` get the server's remedy
+    swapped in; every other hint is the domain's own and must cross
+    untouched."""
 
-    @_guarded
+    @_guarded(data_dir(tmp_path))
     async def refused():
         raise SlopWriterError("nope", hint="try the other thing", code="NOT_ADMIN")
 
     with pytest.raises(ToolError) as exc:
         run(refused())
     assert payload_of(exc.value)["hint"] == "try the other thing"
+
+
+def unresolvable(output_dir) -> dict:
+    """Drive `CANNOT_RESOLVE` through the boundary and read its hint.
+
+    Raised directly rather than through a tool: reaching `resolve_peer` needs
+    a session, and the hint is the entrypoint's work either way."""
+
+    @_guarded(output_dir)
+    async def missing():
+        raise SlopWriterError(
+            "Cannot resolve @typo",
+            hint="Check the handle for typos.",
+            code="CANNOT_RESOLVE",
+        )
+
+    with pytest.raises(ToolError) as exc:
+        run(missing())
+    return payload_of(exc.value)
+
+
+def test_an_unresolvable_handle_names_the_channels_the_project_has(tmp_path):
+    """#43: the agent that cannot name a channel reads `.tg-analytic/` to find
+    one — five of thirteen sessions in #41's drive did, one of them out of a
+    neighbouring checkout. The failure it should have hit answers instead."""
+    output_dir = data_dir(tmp_path)
+    output_dir.mkdir(parents=True)
+    (output_dir / "fastnewsdev.db").touch()
+    (output_dir / "opensource_findings_chat.db").touch()
+
+    hint = unresolvable(output_dir)["hint"]
+    assert "fastnewsdev" in hint
+    assert "opensource_findings_chat" in hint
+
+
+def test_a_project_with_no_data_is_told_to_scrape_rather_than_offered_nothing(
+    tmp_path,
+):
+    """The list is empty on every project before its first scrape, and
+    "retry with one of these" over nothing is an instruction to guess."""
+    hint = unresolvable(data_dir(tmp_path))["hint"]
+    assert "scrape" in hint
 
 
 def test_the_payload_is_json_in_the_text_block_not_structured_content(server):
