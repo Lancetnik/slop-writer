@@ -17,9 +17,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to commit SHAs, not tags: a tag is mutable, and this
+      # workflow can mint a PyPI token. Bump the SHA and the trailing version
+      # comment together.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes; leaving GITHUB_TOKEN in .git/config would only
+          # widen what a compromised build step can reach.
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: false
 
@@ -33,14 +40,14 @@ jobs:
       - name: Tag must match the package version
         if: github.event_name == 'release'
         run: |
-          version=$(uv version --short --frozen --no-sync)
+          version=$(uv version --short --no-sync)
           tag="${GITHUB_REF_NAME#v}"
           if [ "$version" != "$tag" ]; then
             echo "::error::release tag '$tag' does not match pyproject version '$version'"
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
           path: dist/
@@ -49,17 +56,23 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     # Split from the build job on purpose: the OIDC token that can publish to
-    # PyPI is never exposed to dependency resolution or build-time code.
+    # PyPI is never exposed to dependency resolution or build-time code. This
+    # job checks out nothing and runs no project code — only the two actions
+    # below.
     permissions:
       id-token: write
+
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dist
           path: dist/
 
-      - uses: astral-sh/setup-uv@v9
-
-      # No credentials: uv detects GitHub Actions OIDC and mints a PyPI token.
+      # No credentials: the action reads the Actions OIDC token, exchanges it
+      # for a short-lived PyPI token, and attaches PEP 740 attestations.
+      # skip-existing keeps a re-run of an already-published version green
+      # instead of failing on the immutable-version error.
       - name: Publish
-        run: uv publish
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          skip-existing: true

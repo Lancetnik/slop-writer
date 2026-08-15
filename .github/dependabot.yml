@@ -1,0 +1,37 @@
+version: 2
+
+updates:
+  # publish.yaml pins every action to a commit SHA with a trailing `# vX.Y.Z`
+  # comment. Dependabot understands that exact shape: it bumps the SHA and
+  # rewrites the comment together, which is the only maintainable way to keep
+  # SHA pins current — doing it by hand means they quietly rot.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    # One PR for all actions instead of four: these bumps are reviewed as a
+    # batch anyway, and each one costs a full CI run.
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # The packaging manifest publish.yaml builds from. Inert until a
+  # pyproject.toml lands at the repo root — Dependabot logs "no manifest" and
+  # opens nothing until then.
+  #
+  # Note this does NOT cover the CLIs' runtime deps: telethon, typer,
+  # python-dotenv and mistune are pinned in PEP-723 `# /// script` headers,
+  # which Dependabot cannot parse. Those stay manual.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    groups:
+      python:
+        patterns:
+          - "*"
