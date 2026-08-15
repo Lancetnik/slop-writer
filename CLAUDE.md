@@ -55,7 +55,8 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     `count_reactions`, `sender_fields`, `group_albums`, `tme_link`). No DB, no
     network, so `scrape` and `group` share it without importing each other.
   - `scrape.py` — the post pipeline: `scrape_posts` / `refresh_posts` over one
-    `ingest` lifecycle, album completion, and the `posts`/`post_metrics` writes.
+    `ingest_with_client` lifecycle, album completion, and the
+    `posts`/`post_metrics` writes.
   - `group.py` — the discussion group: service/admin-log classification, thread
     linkage, the `group_messages`/`group_events` writers, and `scan_group`.
     Imports Telethon (the stdlib-only property went with 0.2.0 — one flat
@@ -97,7 +98,18 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     Recorded fixtures were rejected — they pin a wire format the `<2` pin
     already expects to move. One quirk the factories hide: `Message.text` is a
     property returning `None` until assigned, and every `msg.text or ""` in
-    the package depends on it.
+    the package depends on it. `FakeClient` is the whole network boundary
+    (`iter_messages` honouring `reverse`/`limit`/`offset_id`, `get_messages`,
+    `get_entity`, `download_media`, and `__call__` for the three raw TL
+    requests); replies the domain reads through plain `getattr` are duck-typed
+    (`FullChannel`, `AdminLogPage`, `Named`), the ones it `isinstance`-checks
+    are real (`Channel`, `User`, `PublicForwardMessage`).
+  - `test_ingest.py` / `test_group_scan.py` cover the *lifecycles* — the part
+    that orders the units. They call the `*_with_client` functions with a
+    `FakeClient` and a real SQLite file under `tmp_path`, and assert on DB rows
+    and the returned `ScrapeResult`/`GroupScanResult`. `fake_session` exists
+    for exactly one test: that `scrape_posts` resolves the handle before its
+    body opens the DB.
   - `test_server.py` builds a real `FastMCP` over a `tmp_path` root and asks
     it questions — the roster, `outputSchema` absence, the `ask`-rules-vs-tool
     -names comparison, and the write tools' failures up to (never past) the
@@ -222,6 +234,28 @@ Non-obvious, and enforced in `server.py`:
 - Server `instructions` stay **empty** (#21): they are always in context, so
   domain knowledge belongs in the skill.
 
+## Releases
+
+**A release tag is `vMAJOR.MINOR.PATCH` — nothing else.** `v2.0.0`, `v0.2.1`.
+All three components, always the `v` prefix, no suffix, no two-component form
+(`v2.1` is **not** a release tag), no bare `2.0.0`.
+
+- The tag must equal `v` + the `version` in `pyproject.toml`, which stays the
+  single place a version is declared (`slop_writer.__version__` reads it back
+  from the installed distribution metadata). One version covers package **and**
+  skill — #21 accepted the drift that buys.
+- `publish.yaml` gates a release on tag-vs-`pyproject` agreement, but it strips
+  the `v` with `${GITHUB_REF_NAME#v}`, so it accepts a bare `2.0.0` and would
+  accept `v2.1` if `pyproject` said `2.1`. **The naming rule is a convention
+  the gate does not enforce** — a job wanting to enforce it needs its own
+  `case "$GITHUB_REF_NAME" in v[0-9]*.[0-9]*.[0-9]*)` check.
+- PyPI versions are immutable, so a wrong tag is unfixable after upload. Check
+  the tag before publishing the release, not after.
+- Note `v2.1` on the remote: a stray tag on a pre-package commit (`e17f826`),
+  with no release attached and ahead of the real `v0.0.1 → v0.1.0 → v0.2.0`
+  line. It is exactly the shape this rule forbids. Deleting a published tag is
+  the owner's call, not an agent's.
+
 ## tg_scrape.py commands
 
 | Command | Does | Needs |
@@ -263,10 +297,23 @@ Scrape selection flags are mutually exclusive; default to `--latest N`
   This is what lets the MCP server call the same function and build a JSON
   payload instead. `code` is the #15 vocabulary, and is `None` at the raise
   sites that vocabulary doesn't name yet.
+- **The domain uses a client, the entrypoint owns it.** The scrape and scan
+  paths come in twins: `X_with_client(client, …)` does the work,
+  `X(…, session_file)` is the same call with one `channel_session` wrapped
+  around it (`scrape_posts`, `refresh_posts`, `scan_group` — the CLIs' public
+  signatures, unchanged). A server holding one long-lived client calls the
+  `_with_client` form and never pays for a login per request; a test hands
+  over a fake and no session exists at all. Other paths (`stats`, `scheduled`,
+  `publish`) still open their own session — they get the same split when a
+  caller needs it, not before. A **new command adds both forms.**
 - Handles resolve through `resolve_peer` **before** any `open_db` call, so a
   typo exits 1 with `Cannot resolve @x` instead of a raw Telethon traceback
   plus a stray empty `.tg-analytic/<typo>.db`. Keep that order when adding a
   command; zero scraped posts then means an empty window, never a bad handle.
+  The nesting *is* the invariant: `open_db` lives inside the `channel_session`
+  body. For the group scan it lives one level lower — inside
+  `scan_group_with_client`, after `resolve_group_target`, because a channel's
+  *linked* group is not the channel and only the scan knows which to open.
 - `post_metrics` is **append-only** — use `MAX(id)` for "latest snapshot", not
   `MAX(scrape_date)`. See the canonical CTE in `references/schema.md`.
 - **One album = one `posts` row.** A selection window can start inside an album,
