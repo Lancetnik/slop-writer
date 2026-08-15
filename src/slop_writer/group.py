@@ -534,22 +534,26 @@ def _load_thread_stats(
     return threads
 
 
-async def scan_group(
+async def scan_group_with_client(
+    client: TelegramClient,
     channel: str | None,
     group: str | None,
     output_dir: Path,
-    session_file: str,
     limit: int | None = None,
     offset_id: int = 0,
     offset_date: datetime | None = None,
     latest: int | None = None,
 ) -> GroupScanResult:
-    """Scan the discussion group: messages + membership events + a member
-    snapshot. Selection semantics mirror the post scrape (same window flags,
-    same `latest` newest-first flip, same inclusive offset_id).
+    """One scan over an already-connected client.
 
-    Exactly one of `channel` / `group` is expected; the caller decides how to
-    report a request that names both or neither."""
+    Messages + membership events + a member snapshot. Selection semantics
+    mirror the post scrape (same window flags, same `latest` newest-first flip,
+    same inclusive offset_id). Exactly one of `channel` / `group` is expected;
+    the caller decides how to report a request that names both or neither.
+
+    The client is a parameter for the reason given on
+    `scrape.ingest_with_client`: connection lifetime belongs to whoever owns
+    the connection, not to the scan."""
     scrape_date = datetime.now(UTC).isoformat()
     handle = channel or group
 
@@ -561,92 +565,91 @@ async def scan_group(
         iter_offset_id = offset_id - 1 if offset_id else 0
         iter_offset_date = offset_date
 
-    async with channel_session(session_file) as (client, _):
-        target = await resolve_group_target(client, channel, group)
-        # DB after the target resolved — see the same note in `scrape.ingest`.
-        conn = open_db(output_dir, handle)
-        try:
-            log.info(
-                "authenticated, scanning group %s (%s)",
-                target.title or target.link, handle,
+    target = await resolve_group_target(client, channel, group)
+    # DB after the target resolved — see the same note in `scrape.ingest`.
+    conn = open_db(output_dir, handle)
+    try:
+        log.info(
+            "authenticated, scanning group %s (%s)",
+            target.title or target.link, handle,
+        )
+        raw = [
+            m
+            async for m in client.iter_messages(
+                target.entity,
+                limit=iter_limit,
+                reverse=reverse,
+                offset_id=iter_offset_id,
+                offset_date=iter_offset_date,
             )
-            raw = [
-                m
-                async for m in client.iter_messages(
-                    target.entity,
-                    limit=iter_limit,
-                    reverse=reverse,
-                    offset_id=iter_offset_id,
-                    offset_date=iter_offset_date,
-                )
-            ]
-            log.info("fetched %d group messages", len(raw))
+        ]
+        log.info("fetched %d group messages", len(raw))
 
-            service = [m for m in raw if isinstance(m, MessageService)]
-            ordinary = [m for m in raw if isinstance(m, Message)]
-            # Snapshot the window NOW: back-fetched out-of-window roots get
-            # appended to `ordinary` below, and their (much older) ids would
-            # otherwise drag `lo` down — making the thread-stats query and
-            # the reported id_range cover prior scans' rows, not this one's.
-            scanned_ids = [m.id for m in raw]
+        service = [m for m in raw if isinstance(m, MessageService)]
+        ordinary = [m for m in raw if isinstance(m, Message)]
+        # Snapshot the window NOW: back-fetched out-of-window roots get
+        # appended to `ordinary` below, and their (much older) ids would
+        # otherwise drag `lo` down — making the thread-stats query and
+        # the reported id_range cover prior scans' rows, not this one's.
+        scanned_ids = [m.id for m in raw]
 
-            events = [e for m in service for e in classify_service_message(m)]
-            admin_events, users = await _fetch_admin_log_events(
-                client, target.entity
+        events = [e for m in service for e in classify_service_message(m)]
+        admin_events, users = await _fetch_admin_log_events(
+            client, target.entity
+        )
+        if admin_events:
+            events.extend(
+                _dedupe_admin_events(conn, admin_events, events)
             )
-            if admin_events:
-                events.extend(
-                    _dedupe_admin_events(conn, admin_events, events)
-                )
-            # Admin-log responses carry the subjects' user objects; only
-            # resolve the (rare) uids the log didn't cover.
-            unresolved = [
-                e for e in events
-                if e.user_id is not None and e.user_id not in users
-            ]
-            users.update(await _resolve_event_users(client, unresolved))
+        # Admin-log responses carry the subjects' user objects; only
+        # resolve the (rare) uids the log didn't cover.
+        unresolved = [
+            e for e in events
+            if e.user_id is not None and e.user_id not in users
+        ]
+        users.update(await _resolve_event_users(client, unresolved))
 
-            root_map = {
-                m.id: pid
-                for m in ordinary
-                if (pid := auto_forward_post_id(m, target.channel_id))
-            }
-            # Comments whose thread root fell outside the window: fetch the
-            # referenced heads once and keep the ones that are real roots.
-            missing = unresolved_root_refs(ordinary, root_map)
-            if missing and target.channel_id is not None:
-                log.info("resolving %d out-of-window thread heads", len(missing))
-                fetched = await client.get_messages(
-                    target.entity, ids=sorted(missing)
-                )
-                for m in fetched:
-                    if not isinstance(m, Message):
-                        continue
-                    pid = auto_forward_post_id(m, target.channel_id)
-                    if pid:
-                        root_map[m.id] = pid
-                        ordinary.append(m)
+        root_map = {
+            m.id: pid
+            for m in ordinary
+            if (pid := auto_forward_post_id(m, target.channel_id))
+        }
+        # Comments whose thread root fell outside the window: fetch the
+        # referenced heads once and keep the ones that are real roots.
+        missing = unresolved_root_refs(ordinary, root_map)
+        if missing and target.channel_id is not None:
+            log.info("resolving %d out-of-window thread heads", len(missing))
+            fetched = await client.get_messages(
+                target.entity, ids=sorted(missing)
+            )
+            for m in fetched:
+                if not isinstance(m, Message):
+                    continue
+                pid = auto_forward_post_id(m, target.channel_id)
+                if pid:
+                    root_map[m.id] = pid
+                    ordinary.append(m)
 
-            rows = [_group_message_row(m, root_map) for m in ordinary]
-            upsert_group_messages(conn, rows)
-            upsert_group_events(conn, events, users)
-            insert_group_metrics(conn, scrape_date, target)
-            conn.commit()
-            log.info(
-                "stored %d message(s), %d event(s) in %s",
-                len(rows), len(events), db_path_for(output_dir, handle),
-            )
+        rows = [_group_message_row(m, root_map) for m in ordinary]
+        upsert_group_messages(conn, rows)
+        upsert_group_events(conn, events, users)
+        insert_group_metrics(conn, scrape_date, target)
+        conn.commit()
+        log.info(
+            "stored %d message(s), %d event(s) in %s",
+            len(rows), len(events), db_path_for(output_dir, handle),
+        )
 
-            lo, hi = (
-                (min(scanned_ids), max(scanned_ids)) if scanned_ids else (0, 0)
-            )
-            threads = (
-                _load_thread_stats(conn, lo, hi, handle)
-                if target.channel_id is not None
-                else []
-            )
-        finally:
-            conn.close()
+        lo, hi = (
+            (min(scanned_ids), max(scanned_ids)) if scanned_ids else (0, 0)
+        )
+        threads = (
+            _load_thread_stats(conn, lo, hi, handle)
+            if target.channel_id is not None
+            else []
+        )
+    finally:
+        conn.close()
 
     overview = {
         "title": target.title,
@@ -674,3 +677,26 @@ async def scan_group(
         for e in events
     ]
     return GroupScanResult(handle, overview, messages, event_dicts, threads)
+
+
+async def scan_group(
+    channel: str | None,
+    group: str | None,
+    output_dir: Path,
+    session_file: str,
+    limit: int | None = None,
+    offset_id: int = 0,
+    offset_date: datetime | None = None,
+    latest: int | None = None,
+) -> GroupScanResult:
+    """`scan_group_with_client` with a session opened around it.
+
+    `channel_session` takes no handle here: which entity to scan is
+    `resolve_group_target`'s job (a channel's *linked* group is not the
+    channel), so the resolve-before-`open_db` ordering lives one level down,
+    inside the scan itself."""
+    async with channel_session(session_file) as (client, _):
+        return await scan_group_with_client(
+            client, channel, group, output_dir,
+            limit, offset_id, offset_date, latest,
+        )
