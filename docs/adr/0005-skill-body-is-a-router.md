@@ -64,3 +64,29 @@ as their second hop.
 - Adding a command is now a one-file edit in `references/`. `SKILL.md` changes
   only when a new *branch* appears — a fourth CLI, or a new always-true
   invariant.
+
+## Second iteration (Lancetnik/slop-writer#30)
+
+The decision holds; what it routes to changed. With the CLIs replaced by MCP
+tools, the flags each reference existed to carry moved into the tool
+descriptions, and a `references/` file per CLI stopped having a subject.
+
+- `scraping.md` is **deleted** and `querying.md` is now `analysis.md`. The
+  routing table is question → *tool*, not question → CLI, and it names the
+  three confusable pairs outright — `scrape_posts`/`refresh_posts`,
+  `scan_linked_group`/`scan_standalone_group`, and the two stats tools —
+  because every tool sits behind `ToolSearch` (#23 found deferral starts at
+  four) and the router is the only thing between the agent and guessing a name.
+- The body absorbed the separate `tools.md` #15 had planned. Once "run from the
+  project root" and `<skill_dir>` went to the server, a body that only routed
+  to another router was empty.
+- The split is now checkable rather than editorial: **no metric fact in a tool
+  description, no argument name in the skill.** That is what keeps a new tool
+  from re-growing the wall of text this ADR removed — a description has no room
+  for one, and the skill has no vocabulary for flags.
+- The reference files stay the second hop, but there are four rather than five,
+  and two of them (`schema.md`, `markup.md`) are unchanged from the first
+  iteration.
+
+Still open: whether a separate ADR-0006 records the MCP move as a whole. This
+amendment covers only what #30 changed about *this* decision.

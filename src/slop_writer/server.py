@@ -441,11 +441,9 @@ def build_server(project_root: Path) -> FastMCP:
         annotations=read_only,
         description=(
             "Views per hour of day from Telegram's stats API — the channel's "
-            "daily rhythm, for choosing when to publish. Console output only; "
-            "nothing is stored.\n"
-            "Requires ADMIN rights on the channel and a stats-eligible "
-            "channel. Hours are in the Telegram account's local timezone, not "
-            "UTC."
+            "daily rhythm, for choosing when to publish. Nothing is stored.\n"
+            "Requires ADMIN rights on the channel, and a stats-eligible "
+            "channel."
         ),
     )
     async def fetch_views_by_hour(channel: str) -> str:
