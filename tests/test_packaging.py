@@ -6,6 +6,7 @@ the same failure mode, and it is invisible — every test would still pass, just
 against last release's code.
 """
 
+import re
 import subprocess
 import sys
 import textwrap
@@ -59,6 +60,40 @@ def test_the_skill_is_declared_as_wheel_data():
     pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
     assert pyproject["tool"]["uv"]["build-backend"]["data"]["purelib"] == "skills"
     assert (REPO / "skills" / "slop-writer" / "SKILL.md").is_file()
+
+
+def test_the_skill_version_is_the_package_version():
+    """One version covers package and skill (#21), so `pyproject.toml` is the
+    source and `SKILL.md`'s frontmatter is a copy — the only one, and the only
+    reason this check exists.
+
+    A copy is what the two install channels force. `slop-writer install` takes
+    the skill out of the wheel, `npx skills add` takes it out of the
+    repository, and the second never sees `pyproject.toml`, so the version has
+    to be written where the skill is. Nothing derives it: the file is static in
+    both channels.
+
+    Drift here is silent in a way the packaging above is not. A missing wheel
+    declaration breaks a user's first `install`; a stale skill version breaks
+    nothing and just misreports which release is on disk — through 0.4.0 the
+    field had been aligned by hand exactly once, when #30 reset the skill's own
+    `2.1` counter onto the package's line.
+
+    Three components, matched exactly. `0.4` would agree about the release and
+    disagree as a string, which leaves the next reader deciding whether the
+    difference means something.
+    """
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
+    frontmatter = re.match(
+        r"---\n(.*?)\n---\n", (REPO / "skills" / "slop-writer" / "SKILL.md").read_text(), re.DOTALL
+    )
+    assert frontmatter, "SKILL.md has no YAML frontmatter"
+    declared = re.search(r"^\s+version:\s*[\"']?([^\"'\s]+)[\"']?\s*$", frontmatter.group(1), re.M)
+    assert declared, "SKILL.md's frontmatter declares no metadata.version"
+    assert declared.group(1) == pyproject["project"]["version"], (
+        f"SKILL.md says {declared.group(1)}, pyproject.toml says "
+        f"{pyproject['project']['version']} — a release bumps both"
+    )
 
 
 def test_the_query_path_stays_importable_without_telethon():
