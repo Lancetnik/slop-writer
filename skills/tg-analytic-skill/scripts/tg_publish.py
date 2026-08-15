@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "slop-writer>=0.2,<0.3",
+#     "slop-writer>=0.3,<0.4",
 #     "python-dotenv>=1.0",
 #     "typer>=0.12,<1",
 # ]
@@ -180,7 +180,7 @@ def schedule(
         result = asyncio.run(schedule_post(channel, draft, session_file))
     except SlopWriterError as exc:
         raise _fail(exc) from None
-    summarize_schedule(result.channel, result.item, result.action)
+    print(summarize_schedule(result.channel, result.item, result.action))
 
 
 @app.command("reschedule")
@@ -200,7 +200,7 @@ def reschedule(
         result = asyncio.run(reschedule_post(channel, id, when, session_file))
     except SlopWriterError as exc:
         raise _fail(exc) from None
-    summarize_schedule(result.channel, result.item, result.action)
+    print(summarize_schedule(result.channel, result.item, result.action))
 
 
 @app.command("edit")
@@ -222,7 +222,7 @@ def edit(
         result = asyncio.run(edit_post(channel, id, text, entities, session_file))
     except SlopWriterError as exc:
         raise _fail(exc) from None
-    summarize_schedule(result.channel, result.item, result.action)
+    print(summarize_schedule(result.channel, result.item, result.action))
 
 
 if __name__ == "__main__":

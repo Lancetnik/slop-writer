@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "slop-writer>=0.2,<0.3",
+#     "slop-writer>=0.3,<0.4",
 # ]
 # ///
 """Query-side CLI: parse arguments, run one read-only query, print a table.
@@ -71,8 +71,10 @@ def main() -> int:
             print(exc.hint, file=sys.stderr)
         return exc.exit_code
 
-    summarize_query(
-        result.columns, result.rows, args.limit, truncate=not args.no_truncate
+    print(
+        summarize_query(
+            result.columns, result.rows, args.limit, truncate=not args.no_truncate
+        )
     )
     return 0
 

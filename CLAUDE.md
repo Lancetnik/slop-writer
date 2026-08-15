@@ -30,19 +30,21 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   `.tg-analytic/.env`, hands the TTY login to the user. The CLIs name it in
   their missing-credentials/session errors, so the agent knows to stop and ask
   rather than attempt an interactive login.
-- `src/slop_writer/` — the **library the CLIs import**, published to PyPI as
-  `slop-writer`. It holds the domain logic: the scripts are argument parsing
-  and output rendering, nothing else, so the MCP server can be a *second
-  caller* of the same functions rather than a rewrite. The scripts name it in
-  their PEP-723 headers (`slop-writer>=0.2,<0.3`), so `uv run` fetches it from
-  the index; nothing is vendored into the skill directory. Modules import each
-  other relatively (`from .db import …`).
+- `src/slop_writer/` — the **library, and now the shipped server**, published
+  to PyPI as `slop-writer`. It holds the domain logic; the scripts are argument
+  parsing and output rendering, nothing else, which is what lets `server.py` be
+  a *second caller* of the same functions rather than a rewrite. The scripts
+  name it in their PEP-723 headers (`slop-writer>=0.3,<0.4`), so `uv run`
+  fetches it from the index; nothing is vendored into the skill directory.
+  Modules import each other relatively (`from .db import …`).
   - `db.py` — paths, the `SCHEMA` + `FTS_SCHEMA` constants (**source of truth**
     for the DB layout), and DB open helpers. **Stdlib-only**, so importing it
     doesn't drag Telethon in.
   - `errors.py` — `SlopWriterError` / `UsageError` (exit 2), carrying
     `message` / `hint` / `code`. The domain **raises**; each entrypoint decides
-    how to report. Stdlib-only.
+    how to report. Stdlib-only. `ERROR_CODES` is the closed 16-code vocabulary
+    the tool contract promises, **enforced at construction** — a code outside
+    it raises `ValueError`.
   - `query.py` — the read-only SQL guards (`validate_read_only`) and execution
     (`run_query`, `schema_listing`). **Stdlib-only** with `db.py`, which is
     what keeps a query answerable without a Telegram client.
@@ -69,7 +71,14 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     validates before any session is required, then `schedule_post` /
     `reschedule_post` / `edit_post`. Nothing on a read path imports it.
   - `render.py` — pure-presentation Markdown renderers (`summarize_*`); plain
-    dicts in, stdout out — no Telethon or SQLite types.
+    dicts in, **a string out** — no Telethon or SQLite types, and no `print`:
+    on a stdio server stdout is the JSON-RPC transport (#16). The CLIs do
+    `print(summarize_x(...))`; one renderer serves both callers.
+  - `server.py` — the **MCP server**: `build_server(project_root)` registers
+    the read tools, `assert_text_only` is the startup guard. Argument parsing
+    and rendering only; no Telegram logic.
+  - `cli.py` — the `slop-writer` console script (argparse, not typer). Decides
+    the project root — from cwd, or `--project` — and loads `.env`.
   - `markdown.py` — `publish.py` only: walks mistune's Markdown AST straight
     to Telethon `MessageEntity` objects (no HTML, no sulguk). Tables render as
     monospace `pre`; UTF-16 offset accounting lives here.
@@ -107,9 +116,10 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   is a different resolution from the suite's. CI runs it as its own step.
 - `.tg-analytic/` — **runtime state at the project root** (cwd), gitignored:
   `.env`, `session.session`, one `<channel>.db` per channel, `media/`. The
-  **CLIs** anchor this on `Path.cwd()` (`PROJECT_ROOT` at the top of each
-  script) and pass the derived paths in; `slop_writer` never reads the cwd
-  itself. Always run from the project root.
+  **entrypoints** anchor this on `Path.cwd()` (`PROJECT_ROOT` at the top of
+  each script; `cli.py` for the server, overridable with `--project`) and pass
+  the derived paths in; `slop_writer` never reads the cwd itself. Always run
+  from the project root — and the MCP client launches `serve` there.
 
 ## Stack
 
@@ -130,10 +140,59 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
 - **Telethon** (`>=1.36,<2`) — Telegram client API (not the bot API). Auth = a
   `session.session` file from a one-time interactive `login` (needs a TTY for
   the SMS code, so it can't run via the Bash tool — tell the user to run it).
-- **typer** for the CLI — a *script* dependency only, never the library's: the
-  domain raises `SlopWriterError` and the script turns it into stderr + an exit
-  code. **SQLite** for storage (one DB file per channel, leading `@` stripped
-  from the filename). `run_query` opens `?mode=ro`.
+- **typer** for the PEP-723 scripts — a *script* dependency only, never the
+  library's: the domain raises `SlopWriterError` and the script turns it into
+  stderr + an exit code. `slop_writer.cli` (the shipped `slop-writer` command)
+  uses **argparse** instead, so an installed server carries no CLI framework.
+  **SQLite** for storage (one DB file per channel, leading `@` stripped from
+  the filename). `run_query` opens `?mode=ro`.
+- **mcp** (`>=1.10,<2`) — the Python MCP SDK, `mcp.server.fastmcp`. Pinned
+  below 2 because `structured_output=False` is load-bearing (#16) and v2 moved
+  `FastMCP` elsewhere. **python-dotenv** is a package dependency again as of
+  0.3.0: `serve` decides the project root, so it is one of the callers that
+  populates the environment `tg.py` reads.
+
+## slop-writer commands
+
+The shipped console script. `install` / `init` arrive with #20.
+
+| Command | Does | Needs |
+| --- | --- | --- |
+| `serve --mcp` | run the MCP server over stdio; `--project PATH` overrides the cwd-derived project root | launched by the MCP client, not by hand |
+
+## MCP tools (read surface)
+
+Eight read tools, server name `slop-writer`, so a permission rule reads
+`mcp__slop-writer__run_query`. The write tools land with #18.
+
+`scrape_posts`, `refresh_posts`, `scan_linked_group`, `scan_standalone_group`,
+`fetch_subscribers`, `fetch_views_by_hour`, `list_scheduled`, `run_query`.
+
+Non-obvious, and enforced in `server.py`:
+
+- **Text only, never `structuredContent`** — Claude Code discards the content
+  blocks when structure is present (#12), so structure travels *inside* text.
+  The SDK's default is the lossy branch, so registration goes through the
+  local `_tool` wrapper (`structured_output=False`) and `assert_text_only`
+  refuses to start a server whose tools carry an `outputSchema`.
+- **Errors are `{code, message, hint}` JSON in the text block** with
+  `isError: true`, over `errors.ERROR_CODES`. `_guarded` wraps every tool: it
+  translates `SlopWriterError`, names `FLOOD_WAIT` (with `seconds`) at the one
+  place a Telethon flood-wait can be caught once, and turns anything else into
+  `INTERNAL` rather than a traceback. The SDK prefixes the text with
+  `Error executing tool <name>: `; the JSON is the tail.
+- **Argument validation failures are the one gap**: pydantic rejects a bad
+  `select` arm *before* `_guarded` runs, so those come back as a pydantic
+  message rather than the JSON contract.
+- `select` is a **nested** tagged union (`LatestSelect` / `WindowSelect`, both
+  `extra="forbid"`) — a root-level combinator gets flattened by the client
+  (#23), and nothing validates tool input on the way in.
+- `run_query` alone carries `_meta["anthropic/alwaysLoad"]`; every other tool
+  is deferred behind `ToolSearch`. Its rendered-row default is **50** where the
+  CLI's `--limit` is 100 — different layers, different readers, deliberately
+  not unified.
+- Server `instructions` stay **empty** (#21): they are always in context, so
+  domain knowledge belongs in the skill.
 
 ## tg_scrape.py commands
 

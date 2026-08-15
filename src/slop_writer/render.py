@@ -1,19 +1,33 @@
-"""Markdown renderers: plain summary dicts in, LLM-oriented stdout out.
+"""Markdown renderers: plain summary dicts in, LLM-oriented Markdown out.
 
 Pure presentation — no Telegram, no SQLite, no Telethon types. The dicts the
 domain modules return (`ScrapeResult`, `GroupScanResult`, ...) are the
-interface; anything here is exercisable by fabricating them. Every renderer
-prints a Markdown block designed to be pasted to the user as-is (see SKILL.md
-"Reporting back to the user").
+interface; anything here is exercisable by fabricating them.
 
-Printing, rather than returning a string, is deliberate: rendering is the
-entrypoint's job, and today's entrypoint is a CLI whose output *is* stdout.
-A caller that needs the text instead of the stream is the MCP server's
-problem to state, not this module's to guess.
+Returning a string, rather than printing it, is what the second entrypoint
+forced (Lancetnik/slop-writer#16): for a **stdio** MCP server stdout *is* the
+JSON-RPC transport, so a `print` inside the server process corrupts the
+protocol stream. The CLIs do `print(summarize_x(...))` and their terminal
+output is unchanged; the server puts the same string in a text block. One
+renderer serves both, which is the point — two would be two things to keep in
+sync.
+
+The summaries are **pre-computation**, not decoration: the aggregation, the
+top-10 ranking, and above all the direction disambiguation in
+`summarize_scrape` ("OTHER channels forwarded YOUR content" vs "YOUR reposts
+of OTHER channels") are domain knowledge encoded in the output. Handed the raw
+rows instead, a model re-derives that relation on every read and sometimes gets
+it backwards.
 """
 
 from collections import Counter
 from datetime import UTC, datetime
+
+#: Cap on the two `summarize_scrape` sections that grow with the scrape window.
+#: Every other section is bounded by construction (an aggregate or a top-10);
+#: these two are per-post, so a 500-post scrape would otherwise render 500
+#: blocks. Clipping is always announced with the true total (#16).
+MAX_RESHARE_POSTS = 25
 
 
 def _text_snippet(text: str | None, length: int = 80) -> str:
@@ -68,33 +82,39 @@ def summarize_query(
     rows: list[tuple],
     limit: int = 100,
     truncate: bool = True,
-) -> None:
-    """Print a query result as a Markdown table.
+) -> str:
+    """Render a query result as a Markdown table.
 
-    `limit` caps the printed rows (0 = all) but never the reported count: a
+    `limit` caps the rendered rows (0 = all) but never the reported count: a
     caller reading "50 row(s), showing 50" must be able to tell a full answer
-    from a clipped one."""
+    from a clipped one. That separation is a server invariant, not a nicety —
+    silently clipping a metrics table is a correctness bug.
+
+    A pipe table, not JSON: the header prints once instead of repeating every
+    key on every row, which is 2-3x fewer tokens for the same information."""
     if not columns:
-        print("(query returned no columns)")
-        return
+        return "(query returned no columns)"
 
     truncated = limit and len(rows) > limit
     visible = rows[:limit] if limit else rows
 
-    print("| " + " | ".join(columns) + " |")
-    print("| " + " | ".join("---" for _ in columns) + " |")
+    out = [
+        "| " + " | ".join(columns) + " |",
+        "| " + " | ".join("---" for _ in columns) + " |",
+    ]
     for row in visible:
-        print("| " + " | ".join(_query_cell(v, truncate) for v in row) + " |")
+        out.append("| " + " | ".join(_query_cell(v, truncate) for v in row) + " |")
 
-    print(f"\n_{len(rows)} row(s)" + (f", showing {limit}_" if truncated else "_"))
+    out.append(f"\n_{len(rows)} row(s)" + (f", showing {limit}_" if truncated else "_"))
+    return "\n".join(out)
 
 
-def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> None:
-    """Print an LLM-oriented summary of a scrape run to stdout."""
-    print(f"\n# Scrape summary: {channel}\n")
+def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> str:
+    """Render an LLM-oriented summary of a scrape run."""
+    out = [f"\n# Scrape summary: {channel}\n"]
     if not posts:
-        print("No posts fetched.")
-        return
+        out.append("No posts fetched.")
+        return "\n".join(out)
 
     dates = sorted(p["date"] for p in posts if p.get("date"))
     n = len(posts)
@@ -108,22 +128,22 @@ def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> N
     # `public_channels` persistence but carry no `shared_posts`, so filter.
     forwarders = [c for c in channels if c.get("shared_posts")]
 
-    print("## Overview\n")
+    out.append("## Overview\n")
     span = f"  ({dates[0][:10]} → {dates[-1][:10]})" if dates else ""
-    print(f"- Posts: {n}{span}")
-    print(f"- Views: {views:,}  (avg {views // n:,}/post)")
-    print(f"- Reactions: {reactions:,}   Comments: {comments:,}   "
-          f"Forwards of your posts: {forwards:,}")
-    print(f"- Your posts re-shared by: {len(forwarders)} other channels")
+    out.append(f"- Posts: {n}{span}")
+    out.append(f"- Views: {views:,}  (avg {views // n:,}/post)")
+    out.append(f"- Reactions: {reactions:,}   Comments: {comments:,}   "
+               f"Forwards of your posts: {forwards:,}")
+    out.append(f"- Your posts re-shared by: {len(forwarders)} other channels")
 
     # One combined ranking, sorted by views, with reactions alongside - half
     # the lines of two separate tables and both signals visible at once.
     top = sorted(posts, key=lambda p: p.get("views") or 0, reverse=True)[:10]
-    print("\n## Top posts\n")
-    print("| Views | Reactions | Post | Snippet |")
-    print("|------:|----------:|------|---------|")
+    out.append("\n## Top posts\n")
+    out.append("| Views | Reactions | Post | Snippet |")
+    out.append("|------:|----------:|------|---------|")
     for p in top:
-        print(
+        out.append(
             f"| {p.get('views') or 0:,} | {p.get('reactions') or 0:,} "
             f"| {p['link']} | {_md_cell(p.get('text'))} |"
         )
@@ -141,17 +161,21 @@ def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> N
         # Direction matters and gets confused easily: this section is OTHERS
         # re-sharing US. The opposite direction (our channel reposting others)
         # is the "YOUR reposts" section below. Spell it out in the headings.
-        print(
+        out.append(
             f"\n## Who re-shared YOUR posts "
             f"({len(shares_by_post)} of your posts re-shared, "
             f"{total_shares} shares by {len(forwarders)} other channels)\n"
         )
-        print(
+        out.append(
             "Direction: OTHER channels forwarded YOUR content (your reach). "
             "Each of your posts below was re-shared by the listed channels. "
             "`subs` is each channel's size (the audience that share reached).\n"
         )
-        for pid in sorted(shares_by_post, reverse=True):
+        # Bounded like every other section: the summary must not grow with the
+        # window, or a wide scrape buries its own overview (#16).
+        shown = sorted(shares_by_post, reverse=True)
+        clipped = shown[MAX_RESHARE_POSTS:]
+        for pid in shown[:MAX_RESHARE_POSTS]:
             chans = sorted(
                 shares_by_post[pid],
                 key=lambda c: c.get("subscribers") or 0,
@@ -161,51 +185,65 @@ def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> N
             if p is not None:
                 views = p.get("views")
                 views_str = f"{views:,} views" if views is not None else "views n/a"
-                print(f"### #{pid} ({views_str}) — {p['link']}")
+                out.append(f"### #{pid} ({views_str}) — {p['link']}")
                 snippet = _text_snippet(p.get("text"))
                 if snippet:
-                    print(f'"{snippet}"')
+                    out.append(f'"{snippet}"')
             else:
                 # Re-shared post is outside this scrape's window; id only.
-                print(f"### #{pid}")
+                out.append(f"### #{pid}")
             for c in chans:
                 subs = c.get("subscribers")
                 subs_str = f"{subs:,} subs" if subs is not None else "subs n/a"
                 name = c.get("name") or c["link"]
-                print(f"- {name} ({subs_str}) — {c['link']}")
-            print()
+                out.append(f"- {name} ({subs_str}) — {c['link']}")
+            out.append("")
+        if clipped:
+            out.append(
+                f"_{len(shown)} re-shared posts, showing {MAX_RESHARE_POSTS}. "
+                "Query `public_shares` for the rest._\n"
+            )
 
     # Our posts that forward/cite another channel — one row per post, newest
     # first. Source channel name/subs joined from `channels`.
     cited_posts = [p for p in posts if p.get("forwarder_from_channel")]
     if cited_posts:
         by_link = {c["link"]: c for c in channels}
-        print("\n## YOUR reposts of OTHER channels (not your original content)\n")
-        print(
+        out.append("\n## YOUR reposts of OTHER channels (not your original content)\n")
+        out.append(
             "Direction: YOUR channel forwarded SOMEONE ELSE's content — the "
             "opposite of the re-shares section above.\n"
         )
-        print("| Post | Snippet | Reposted from |")
-        print("|------|---------|---------------|")
-        for p in sorted(cited_posts, key=lambda p: p["id"], reverse=True):
+        out.append("| Post | Snippet | Reposted from |")
+        out.append("|------|---------|---------------|")
+        ranked = sorted(cited_posts, key=lambda p: p["id"], reverse=True)
+        for p in ranked[:MAX_RESHARE_POSTS]:
             link = p["forwarder_from_channel"]
             info = by_link.get(link, {})
             name = info.get("name") or link
             subs = info.get("subscribers")
             subs_str = f"{subs:,} subs" if subs else "subs n/a"
-            print(
+            out.append(
                 f"| {p['link']} | {_md_cell(p.get('text'))} "
                 f"| {name} ({subs_str}) {link} |"
             )
+        if len(ranked) > MAX_RESHARE_POSTS:
+            out.append(
+                f"\n_{len(ranked)} reposts, showing {MAX_RESHARE_POSTS}. "
+                "Query `posts WHERE forwarder_from_channel IS NOT NULL` "
+                "for the rest._"
+            )
+    return "\n".join(out)
 
 
-def summarize_subscribers(channel: str, rows: dict[str, dict]) -> None:
-    """Print an LLM-oriented summary of subscriber dynamics to stdout."""
-    print(f"\n# Subscriber summary: {channel}\n")
+
+def summarize_subscribers(channel: str, rows: dict[str, dict]) -> str:
+    """Render an LLM-oriented summary of subscriber dynamics."""
+    out = [f"\n# Subscriber summary: {channel}\n"]
     dates = sorted(rows)
     if not dates:
-        print("No subscriber data.")
-        return
+        out.append("No subscriber data.")
+        return "\n".join(out)
 
     joins = sum(_as_number(rows[d].get("joins")) for d in dates)
     leaves = sum(_as_number(rows[d].get("leaves")) for d in dates)
@@ -213,22 +251,22 @@ def summarize_subscribers(channel: str, rows: dict[str, dict]) -> None:
     last_total = _as_number(rows[dates[-1]].get("total"))
     days = len(dates)
 
-    print(f"- Date range: {dates[0]} -> {dates[-1]} ({days} days)")
-    print(f"- Current total subscribers: {int(last_total):,}")
-    print(
+    out.append(f"- Date range: {dates[0]} -> {dates[-1]} ({days} days)")
+    out.append(f"- Current total subscribers: {int(last_total):,}")
+    out.append(
         f"- Net change over period: {int(last_total - first_total):+,} "
         f"(from {int(first_total):,})"
     )
-    print(
+    out.append(
         f"- Total joins: {int(joins):,} | total leaves: {int(leaves):,} "
         f"| net: {int(joins - leaves):+,}"
     )
-    print(f"- Avg per day: {joins / days:.1f} joins, {leaves / days:.1f} leaves")
+    out.append(f"- Avg per day: {joins / days:.1f} joins, {leaves / days:.1f} leaves")
 
     best = max(dates, key=lambda d: _as_number(rows[d].get("joins")))
     worst = max(dates, key=lambda d: _as_number(rows[d].get("leaves")))
-    print(f"- Best day: {best} (+{int(_as_number(rows[best].get('joins')))} joins)")
-    print(
+    out.append(f"- Best day: {best} (+{int(_as_number(rows[best].get('joins')))} joins)")
+    out.append(
         f"- Worst day: {worst} "
         f"(-{int(_as_number(rows[worst].get('leaves')))} leaves)"
     )
@@ -238,57 +276,61 @@ def summarize_subscribers(channel: str, rows: dict[str, dict]) -> None:
         for source, count in rows[d].get("sources", {}).items():
             source_totals[source] += _as_number(count)
     if source_totals:
-        print("\n## New subscribers by source (period total)\n")
+        out.append("\n## New subscribers by source (period total)\n")
         grand = sum(source_totals.values()) or 1
         for source, value in source_totals.most_common():
-            print(f"- {source}: {int(value):,} ({value / grand * 100:.1f}%)")
+            out.append(f"- {source}: {int(value):,} ({value / grand * 100:.1f}%)")
+    return "\n".join(out)
 
 
-def summarize_scheduled(channel: str, items: list[dict]) -> None:
-    """Print the scheduled-post queue to stdout, one block per post."""
-    print(f"\n# Scheduled posts: {channel}\n")
+def summarize_scheduled(channel: str, items: list[dict]) -> str:
+    """Render the scheduled-post queue, one block per post."""
+    out = [f"\n# Scheduled posts: {channel}\n"]
     if not items:
-        print("No scheduled posts in the queue.")
-        return
+        out.append("No scheduled posts in the queue.")
+        return "\n".join(out)
 
     now = datetime.now(UTC)
     dates = [i["date"] for i in items if i.get("date")]
-    print("## Overview\n")
-    print(f"- Queued posts: {len(items)}")
+    out.append("## Overview\n")
+    out.append(f"- Queued posts: {len(items)}")
     if dates:
         lo = dates[0][:16].replace("T", " ")
         hi = dates[-1][:16].replace("T", " ")
-        print(f"- Window: {lo} → {hi} UTC")
-    print("- Times are UTC. Scheduled posts have no engagement metrics yet.")
-    print(
+        out.append(f"- Window: {lo} → {hi} UTC")
+    out.append("- Times are UTC. Scheduled posts have no engagement metrics yet.")
+    out.append(
         "- `sched-msg #` is the scheduled-message id, distinct from the id the "
         "post gets once published.\n"
     )
 
-    print("## Queue\n")
+    out.append("## Queue\n")
     for n, i in enumerate(items, 1):
         when = (i.get("date") or "")[:16].replace("T", " ") or "no date"
         rel = _rel_when(i.get("date"), now)
-        print(f"### {n}. {when} UTC ({rel}) — sched-msg #{i['id']}\n")
+        # The id heads its own block rather than sitting in a table cell: it is
+        # the *input* to reschedule/edit, so it has to be lexically unmissable.
+        out.append(f"### {n}. {when} UTC ({rel}) — sched-msg #{i['id']}\n")
         body = (i.get("text") or "").strip()
         if body:
-            print("Text:")
+            out.append("Text:")
             for line in body.splitlines():
-                print(f"> {line}")
+                out.append(f"> {line}")
         else:
-            print("Text: (none)")
+            out.append("Text: (none)")
         attachments = i.get("attachments") or []
         if attachments:
-            print("\nAttachments:")
+            out.append("\nAttachments:")
             for a in attachments:
-                print(f"- {a}")
+                out.append(f"- {a}")
         else:
-            print("\nAttachments: (none)")
-        print()
+            out.append("\nAttachments: (none)")
+        out.append("")
+    return "\n".join(out)
 
 
-def summarize_schedule(channel: str, item: dict, action: str = "Scheduled") -> None:
-    """Confirm one queued/changed post to stdout.
+def summarize_schedule(channel: str, item: dict, action: str = "Scheduled") -> str:
+    """Confirm one queued/changed post.
 
     `action` heads the block — "Scheduled" (new), "Rescheduled" (time changed),
     or "Edited" (body changed). Nothing is persisted: a scheduled-message id
@@ -297,65 +339,67 @@ def summarize_schedule(channel: str, item: dict, action: str = "Scheduled") -> N
     now = datetime.now(UTC)
     when = (item.get("date") or "")[:16].replace("T", " ") or "no date"
     rel = _rel_when(item.get("date"), now)
-    print(f"\n# {action} post: {channel}\n")
-    print(f"- Publishes: {when} UTC ({rel})")
+    out = [f"\n# {action} post: {channel}\n"]
+    out.append(f"- Publishes: {when} UTC ({rel})")
     if item.get("requested"):
-        print(f"- Requested: {item['requested']}")
-    print(
+        out.append(f"- Requested: {item['requested']}")
+    out.append(
         f"- sched-msg #{item['id']} — distinct from the id the post gets once "
         "published; not stored in the DB."
     )
     if item.get("entities") is not None:
-        print(f"- Formatting entities: {item['entities']}")
+        out.append(f"- Formatting entities: {item['entities']}")
     if item.get("photos"):
         n = item["photos"]
         kind = "album of " if n > 1 else ""
         pos = "above" if item.get("caption_above") else "below"
-        print(
+        out.append(
             f"- Photos: {kind}{n} — the body below is the caption, "
             f"shown {pos} the photos"
         )
-    print("\n## Body preview\n")
+    out.append("\n## Body preview\n")
     body = (item.get("text") or "").strip()
     if body:
         for line in body.splitlines():
-            print(f"> {line}")
+            out.append(f"> {line}")
     else:
-        print("> (empty)")
-    print()
+        out.append("> (empty)")
+    out.append("")
+    return "\n".join(out)
 
 
 def summarize_views(
     channel: str, hours: list, views: list, period_start: str, period_end: str
-) -> None:
-    """Print an LLM-oriented summary of views-per-hour to stdout."""
-    print(f"\n# Views by hour of day: {channel}\n")
+) -> str:
+    """Render an LLM-oriented summary of views-per-hour."""
+    out = [f"\n# Views by hour of day: {channel}\n"]
     pairs = [(int(h), _as_number(v)) for h, v in zip(hours, views)]
     if not pairs:
-        print("No views-by-hour data.")
-        return
+        out.append("No views-by-hour data.")
+        return "\n".join(out)
 
     total = sum(v for _, v in pairs) or 1
     ranked = sorted(pairs, key=lambda hv: hv[1], reverse=True)
 
-    print(f"- Analyzed period: {period_start} -> {period_end}")
-    print(f"- Total views in sample: {int(total):,}")
-    print(
+    out.append(f"- Analyzed period: {period_start} -> {period_end}")
+    out.append(f"- Total views in sample: {int(total):,}")
+    out.append(
         "- Hour is hour-of-day, 0-23, in the Telegram account's local "
         "timezone (NOT UTC)."
     )
 
-    print("\n## Peak hours\n")
+    out.append("\n## Peak hours\n")
     for hour, value in ranked[:3]:
-        print(f"- {hour:02d}:00 | {int(value):,} views ({value / total * 100:.1f}%)")
+        out.append(f"- {hour:02d}:00 | {int(value):,} views ({value / total * 100:.1f}%)")
 
-    print("\n## Quietest hours\n")
+    out.append("\n## Quietest hours\n")
     for hour, value in sorted(ranked[-3:]):
-        print(f"- {hour:02d}:00 | {int(value):,} views ({value / total * 100:.1f}%)")
+        out.append(f"- {hour:02d}:00 | {int(value):,} views ({value / total * 100:.1f}%)")
 
-    print("\n## All hours\n")
+    out.append("\n## All hours\n")
     for hour, value in sorted(pairs):
-        print(f"- {hour:02d}:00 | {int(value):,} views ({value / total * 100:.1f}%)")
+        out.append(f"- {hour:02d}:00 | {int(value):,} views ({value / total * 100:.1f}%)")
+    return "\n".join(out)
 
 
 def _via_breakdown(events: list[dict], kind: str) -> str:
@@ -373,16 +417,16 @@ def summarize_group(
     messages: list[dict],
     events: list[dict],
     threads: list[dict],
-) -> None:
-    """Print an LLM-oriented summary of a discussion-group scan to stdout.
+) -> str:
+    """Render an LLM-oriented summary of a discussion-group scan.
 
     `messages` includes thread roots (is_thread_root=1); every engagement
     figure below excludes them — roots carry the channel post's reactions.
     """
-    print(f"\n# Group summary: {label}\n")
+    out = [f"\n# Group summary: {label}\n"]
     if not messages and not events:
-        print("No group messages or events in the scanned window.")
-        return
+        out.append("No group messages or events in the scanned window.")
+        return "\n".join(out)
 
     own = [m for m in messages if not m.get("is_thread_root")]
     in_threads = [m for m in own if m.get("thread_post_id") is not None]
@@ -390,21 +434,23 @@ def summarize_group(
     joins = [e for e in events if e["kind"] == "join"]
     leaves = [e for e in events if e["kind"] == "leave"]
 
-    print("## Overview\n")
+    out.append("## Overview\n")
     members = overview.get("members")
     members_str = f" — {members:,} members" if members is not None else ""
-    print(f"- Group: {overview.get('title') or label} ({overview.get('link')}){members_str}")
+    out.append(
+        f"- Group: {overview.get('title') or label} ({overview.get('link')}){members_str}"
+    )
     dates = sorted(d for m in own for d in [m.get("date")] if d)
     if dates:
-        print(f"- Window: {dates[0][:10]} → {dates[-1][:10]}"
-              f"  (group-msg ids {overview.get('id_range')})")
-    print(f"- Messages: {len(own)} ({len(in_threads)} in threads, "
-          f"{len(chatter)} top-level chatter)")
-    print(f"- Joins: {_via_breakdown(events, 'join')}  |  "
-          f"Leaves: {_via_breakdown(events, 'leave')}  |  "
-          f"net {len(joins) - len(leaves):+d}")
+        out.append(f"- Window: {dates[0][:10]} → {dates[-1][:10]}"
+                   f"  (group-msg ids {overview.get('id_range')})")
+    out.append(f"- Messages: {len(own)} ({len(in_threads)} in threads, "
+               f"{len(chatter)} top-level chatter)")
+    out.append(f"- Joins: {_via_breakdown(events, 'join')}  |  "
+               f"Leaves: {_via_breakdown(events, 'leave')}  |  "
+               f"net {len(joins) - len(leaves):+d}")
     if overview.get("standalone"):
-        print("- Standalone mode: thread linkage skipped.")
+        out.append("- Standalone mode: thread linkage skipped.")
 
     by_day: dict[str, Counter] = {}
     for e in events:
@@ -412,17 +458,17 @@ def summarize_group(
         if day:
             by_day.setdefault(day, Counter())[e["kind"]] += 1
     if by_day:
-        print("\n## Joins & leaves by day\n")
-        print("| Day | Joins | Leaves |")
-        print("|-----|------:|-------:|")
+        out.append("\n## Joins & leaves by day\n")
+        out.append("| Day | Joins | Leaves |")
+        out.append("|-----|------:|-------:|")
         for day in sorted(by_day):
             c = by_day[day]
-            print(f"| {day} | {c['join']} | {c['leave']} |")
+            out.append(f"| {day} | {c['join']} | {c['leave']} |")
 
     if threads and not overview.get("standalone"):
-        print(f"\n## Threads in window ({len(threads)})\n")
-        print("| Post | Replies | Commenters | First reply | Snippet |")
-        print("|------|--------:|-----------:|-------------|---------|")
+        out.append(f"\n## Threads in window ({len(threads)})\n")
+        out.append("| Post | Replies | Commenters | First reply | Snippet |")
+        out.append("|------|--------:|-----------:|-------------|---------|")
         unscraped = False
         for t in sorted(threads, key=lambda t: t["replies"], reverse=True):
             first = t.get("first_reply_minutes")
@@ -435,26 +481,27 @@ def summarize_group(
             if not t.get("scraped"):
                 post = f"{post} ⚠"
                 unscraped = True
-            print(f"| {post} | {t['replies']} "
-                  f"| {t['commenters']} | {first_str} | {_md_cell(t.get('snippet'))} |")
+            out.append(f"| {post} | {t['replies']} "
+                       f"| {t['commenters']} | {first_str} | {_md_cell(t.get('snippet'))} |")
         if unscraped:
-            print("\n⚠ — no `posts` row yet, so date and snippet are blank. "
-                  "Run `fetch` on those ids to fill them in.")
+            out.append("\n⚠ — no `posts` row yet, so date and snippet are blank. "
+                       "Run `fetch` on those ids to fill them in.")
 
     if own:
-        print("\n## Engagement\n")
+        out.append("\n## Engagement\n")
         per_author: Counter = Counter(m.get("author") for m in own)
         reacts: Counter = Counter()
         for m in own:
             reacts[m.get("author")] += m.get("reactions") or 0
-        print("| Author | Messages | Reactions received |")
-        print("|--------|---------:|-------------------:|")
+        out.append("| Author | Messages | Reactions received |")
+        out.append("|--------|---------:|-------------------:|")
         for author, n in per_author.most_common(10):
             # `author` is None for anonymous senders — don't print "None".
-            print(f"| {author or 'anonymous'} | {n} | {reacts[author]} |")
+            out.append(f"| {author or 'anonymous'} | {n} | {reacts[author]} |")
         days = len({(m.get("date") or "")[:10] for m in own if m.get("date")}) or 1
-        print(f"\n- Avg messages/day: {len(own) / days:.1f}")
+        out.append(f"\n- Avg messages/day: {len(own) / days:.1f}")
         top = max(own, key=lambda m: m.get("reactions") or 0)
         if top.get("reactions"):
-            print(f"- Most-reacted message: {top['reactions']} reactions — "
-                  f"{top.get('author') or 'anonymous'}: \"{_md_cell(top.get('text'))}\"")
+            out.append(f"- Most-reacted message: {top['reactions']} reactions — "
+                       f"{top.get('author') or 'anonymous'}: \"{_md_cell(top.get('text'))}\"")
+    return "\n".join(out)

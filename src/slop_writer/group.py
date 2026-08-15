@@ -329,6 +329,7 @@ async def resolve_group_target(
                 f"{channel} has no linked discussion group - nothing to scan",
                 hint="Attach a discussion group to the channel, or scan a "
                 "standalone group instead.",
+                code="NO_LINKED_GROUP",
             )
         entity = await client.get_entity(PeerChannel(linked))
         channel_id = ch_entity.id

@@ -108,19 +108,23 @@ def check_photos(photos: list[str]) -> list[Path]:
     if len(photos) > MAX_ALBUM:
         raise UsageError(
             f"Got {len(photos)} photos; a Telegram album holds at most "
-            f"{MAX_ALBUM}."
+            f"{MAX_ALBUM}.",
+            code="INVALID_ARGUMENT",
         )
     paths = []
     for raw in photos:
         path = Path(raw)
         if not path.is_file():
-            raise UsageError(f"--photo {raw!r}: file not found.")
+            raise UsageError(
+                f"--photo {raw!r}: file not found.", code="INVALID_ARGUMENT"
+            )
         if path.suffix.lower() not in PHOTO_EXTS:
             raise UsageError(
                 f"--photo {raw!r}: extension {path.suffix!r} is not a Telegram "
                 f"photo type ({', '.join(sorted(PHOTO_EXTS))}). Other files "
                 "would go out as document attachments — convert the image "
-                "first."
+                "first.",
+                code="INVALID_ARGUMENT",
             )
         paths.append(path)
     return paths
@@ -138,7 +142,9 @@ def render_body(
     if not text.strip():
         if allow_empty:
             return "", []
-        raise UsageError(f"{source} renders to an empty post.")
+        raise UsageError(
+            f"{source} renders to an empty post.", code="INVALID_ARGUMENT"
+        )
     return text, entities
 
 
@@ -158,12 +164,18 @@ def prepare_schedule(
     when = parse_schedule_time(at)
     photos = check_photos(photo_paths) if photo_paths else []
     if caption_above and not photos:
-        raise UsageError("--caption-above only makes sense with --photo.")
+        raise UsageError(
+            "--caption-above only makes sense with --photo.",
+            code="INVALID_ARGUMENT",
+        )
     text, entities = render_body(
         body, allow_empty=bool(photos), source=body_source
     )
     if caption_above and not text.strip():
-        raise UsageError("--caption-above needs a non-empty body to place above.")
+        raise UsageError(
+            "--caption-above needs a non-empty body to place above.",
+            code="INVALID_ARGUMENT",
+        )
     return ScheduleDraft(text, entities, when, photos, caption_above)
 
 

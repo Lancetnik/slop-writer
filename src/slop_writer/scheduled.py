@@ -95,5 +95,6 @@ async def get_scheduled_message(client, entity, msg_id: int) -> Message:
         raise SlopWriterError(
             f"No scheduled post #{msg_id} in the queue.",
             hint="List the queue with `tg_scrape.py scheduled --channel <chan>`.",
+            code="NO_SUCH_MESSAGE",
         )
     return found[0]
