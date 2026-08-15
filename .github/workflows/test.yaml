@@ -1,0 +1,112 @@
+# A separate workflow from publish.yaml on purpose: that file's NAME is bound
+# to PyPI's trusted publisher for `slop-writer`, so adding jobs to it would
+# widen what an OIDC-capable workflow runs. This one mints no tokens.
+
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A second push to the same PR cancels the first — nothing here has side
+# effects worth finishing.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor from requires-python, and the newest supported release.
+        # Nothing between them exercises a different code path, but the floor
+        # is where a 3.12+ idiom would slip in unnoticed.
+        python: ["3.11", "3.13"]
+    steps:
+      # Actions pinned to commit SHAs, matching publish.yaml. Bump the SHA and
+      # the trailing version comment together.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+
+      # No --locked / --frozen: uv.lock is gitignored (this is a library, not
+      # an application), so CI resolves against the index every run. That is
+      # the point — a telethon or mistune release that breaks us shows up here
+      # rather than in a user's install.
+      #
+      # `uv run` installs the project editable, so the suite exercises this
+      # checkout; tests/test_packaging.py asserts it rather than assuming it.
+      - name: Run the suite
+        run: uv run --group dev pytest
+
+  wheel:
+    # The claim in pyproject.toml is that a PEP 735 dependency group never
+    # reaches wheel metadata. Asserted against a real build rather than
+    # trusted, because the failure is invisible: pytest would simply become a
+    # runtime dependency of everyone who installs slop-writer.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Build
+        run: uv build --no-sources
+
+      - name: Dev dependencies must not reach the wheel
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+
+          wheel = glob.glob("dist/*.whl")[0]
+          with zipfile.ZipFile(wheel) as z:
+              meta = next(n for n in z.namelist() if n.endswith("METADATA"))
+              text = z.read(meta).decode()
+              names = z.namelist()
+
+          requires = sorted(
+              line for line in text.splitlines()
+              if line.startswith(("Requires-Dist", "Provides-Extra"))
+          )
+          print(wheel, *requires, sep="\n  ")
+
+          bad = [line for line in requires if "pytest" in line]
+          if bad:
+              sys.exit(f"::error::dev dependency leaked into the wheel: {bad}")
+          if any(n.startswith("tests/") for n in names):
+              sys.exit("::error::tests/ was packaged into the wheel")
+          PY
+
+  schema-doc:
+    # Not a pytest test: this guards a document in skills/, which the package
+    # does not ship, and its PEP-723 header pins slop-writer to this checkout
+    # editable — a different resolution from the suite's. Same push/PR trigger,
+    # separate subject.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: references/schema.md must match SCHEMA
+        run: uv run tools/check_schema_doc.py
