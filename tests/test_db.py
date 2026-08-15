@@ -10,7 +10,14 @@ import sqlite3
 
 import pytest
 
-from slop_writer.db import SCHEMA, data_dir, db_path_for, env_path, open_db
+from slop_writer.db import (
+    SCHEMA,
+    data_dir,
+    db_path_for,
+    env_path,
+    open_db,
+    scraped_channels,
+)
 
 
 def test_paths_hang_off_the_project_root_the_caller_names(tmp_path):
@@ -29,6 +36,26 @@ def test_paths_hang_off_the_project_root_the_caller_names(tmp_path):
 )
 def test_one_db_file_per_channel(tmp_path, channel, filename):
     assert db_path_for(tmp_path, channel).name == filename
+
+
+def test_the_scraped_channels_are_the_db_files_and_nothing_else(tmp_path):
+    """The answer a resolve failure carries (#43), so it reads the directory
+    the same way `db_path_for` writes it — and ignores the session, the .env
+    and the media directory sitting beside them."""
+    output_dir = data_dir(tmp_path)
+    open_db(output_dir, "@fastnewsdev")
+    open_db(output_dir, "@chatter")
+    (output_dir / "session.session").touch()
+    (output_dir / ".env").touch()
+    (output_dir / "media").mkdir()
+
+    assert scraped_channels(output_dir) == ["chatter", "fastnewsdev"]
+
+
+def test_a_project_before_its_first_scrape_holds_no_channels(tmp_path):
+    """`.tg-analytic/` does not exist until something opens a DB, and a
+    missing directory is a project with no data, not a failure."""
+    assert scraped_channels(data_dir(tmp_path)) == []
 
 
 def test_open_creates_the_directory_and_every_table(tmp_path):

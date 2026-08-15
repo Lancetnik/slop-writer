@@ -84,7 +84,11 @@ async def get_scheduled_message(client, entity, msg_id: int) -> Message:
 
     One round-trip via GetScheduledMessages (no full-history scan). Fails with
     an actionable message if nothing matches — the id is most likely stale
-    (the post published, or was already removed)."""
+    (the post published, or was already removed).
+
+    The hint names the *operation*, not the surface that performs it: listing
+    the queue is a tool for one caller and a command for the other, and this
+    function knows which one it is serving no more than `errors.py` does."""
     result = await client(GetScheduledMessagesRequest(peer=entity, id=[msg_id]))
     found = [
         m
@@ -94,6 +98,9 @@ async def get_scheduled_message(client, entity, msg_id: int) -> Message:
     if not found:
         raise SlopWriterError(
             f"No scheduled post #{msg_id} in the queue.",
-            hint="List the queue with `tg_scrape.py scheduled --channel <chan>`.",
+            hint="List the channel's scheduled queue again and use a current "
+            "id — these are sched-msg ids, and they go stale the moment a post "
+            "publishes or is removed.",
+            code="NO_SUCH_MESSAGE",
         )
     return found[0]

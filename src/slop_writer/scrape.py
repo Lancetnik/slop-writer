@@ -17,6 +17,7 @@ goes through `group.upsert_group_messages` — one table, one writer.
 import json
 import logging
 import sqlite3
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +47,13 @@ log = logging.getLogger(__name__)
 
 # Per-post progress prints every Nth post at INFO; per-post lines go to DEBUG.
 PROGRESS_EVERY = 50
+
+#: What a caller passes to watch a long run: awaited with (done, total) at the
+#: same points the INFO progress line is logged. The CLI passes nothing (its
+#: progress *is* the log line on stderr); the MCP server passes a callback that
+#: sends an MCP progress notification, which is what keeps a multi-minute
+#: scrape from tripping the client's idle watchdog.
+ProgressHook = Callable[[int, int], Awaitable[None]]
 
 # Telegram caps an album at 10 items, so a window that cuts one can be missing
 # at most 9 members on either side of what it returned.
@@ -556,6 +564,7 @@ async def _persist_messages(
     with_media: bool,
     with_channel_info: bool,
     window_contiguous: bool,
+    on_progress: ProgressHook | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Group, persist and summarize a batch of fetched messages."""
     post_groups = await complete_albums(
@@ -586,6 +595,8 @@ async def _persist_messages(
             else f"group {sorted(m.id for m in group)}"
         )
         _log_progress(done, total, label, id_range)
+        if on_progress is not None:
+            await on_progress(done, total)
 
     log.debug("resolving %d forwarding channels", len(channel_map))
     channel_summaries: list[dict] = []
@@ -623,6 +634,7 @@ async def ingest_with_client(
     with_media: bool,
     with_channel_info: bool,
     window_contiguous: bool = True,
+    on_progress: ProgressHook | None = None,
 ) -> ScrapeResult:
     """One run over an already-connected client.
 
@@ -643,7 +655,7 @@ async def ingest_with_client(
         post_summaries, channel_summaries = await _persist_messages(
             client, entity, channel, raw, conn, output_dir / "media",
             scrape_date, with_comments, with_media, with_channel_info,
-            window_contiguous,
+            window_contiguous, on_progress,
         )
     finally:
         conn.close()
@@ -663,6 +675,7 @@ async def scrape_posts_with_client(
     with_comments: bool = True,
     with_media: bool = True,
     with_channel_info: bool = True,
+    on_progress: ProgressHook | None = None,
 ) -> ScrapeResult:
     # `latest=N` flips iteration to newest-first to actually return the
     # most recent N posts. `limit=N` alone keeps the chronological
@@ -698,7 +711,7 @@ async def scrape_posts_with_client(
     return await ingest_with_client(
         client, entity, channel, output_dir, source,
         with_comments, with_media, with_channel_info,
-        window_contiguous=True,
+        window_contiguous=True, on_progress=on_progress,
     )
 
 
@@ -711,6 +724,7 @@ async def refresh_posts_with_client(
     with_comments: bool = True,
     with_media: bool = True,
     with_channel_info: bool = True,
+    on_progress: ProgressHook | None = None,
 ) -> ScrapeResult:
     async def source(client: TelegramClient, entity) -> list[Message]:
         log.info("authenticated, fetching %d post(s) from %s", len(post_ids), channel)
@@ -731,7 +745,7 @@ async def refresh_posts_with_client(
     return await ingest_with_client(
         client, entity, channel, output_dir, source,
         with_comments, with_media, with_channel_info,
-        window_contiguous=False,
+        window_contiguous=False, on_progress=on_progress,
     )
 
 
@@ -754,12 +768,13 @@ async def scrape_posts(
     with_comments: bool = True,
     with_media: bool = True,
     with_channel_info: bool = True,
+    on_progress: ProgressHook | None = None,
 ) -> ScrapeResult:
     async with channel_session(session_file, channel) as (client, entity):
         return await scrape_posts_with_client(
             client, entity, channel, output_dir,
             limit, offset_id, offset_date, latest,
-            with_comments, with_media, with_channel_info,
+            with_comments, with_media, with_channel_info, on_progress,
         )
 
 
@@ -771,9 +786,10 @@ async def refresh_posts(
     with_comments: bool = True,
     with_media: bool = True,
     with_channel_info: bool = True,
+    on_progress: ProgressHook | None = None,
 ) -> ScrapeResult:
     async with channel_session(session_file, channel) as (client, entity):
         return await refresh_posts_with_client(
             client, entity, channel, post_ids, output_dir,
-            with_comments, with_media, with_channel_info,
+            with_comments, with_media, with_channel_info, on_progress,
         )

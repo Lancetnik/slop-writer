@@ -16,8 +16,9 @@ channel:
 - Pull subscriber growth/churn broken down by acquisition source and views by hour of day for the "best time to post" question.
 - Schedule, retime, and rewrite future posts — the one write path.
 
-Backed by Telethon, with a separate read-only SQL CLI for querying the local
-SQLite DB (one file per channel).
+Backed by Telethon. Everything reaches the agent as **MCP tools** — eleven of
+them, over a local SQLite DB (one file per channel) that a read-only SQL tool
+answers questions from.
 
 > This is my personal skill — I built it to manage my own channel,
 > [**@fastnewsdev**](https://t.me/fastnewsdev). It's shared here in case the
@@ -25,37 +26,56 @@ SQLite DB (one file per channel).
 
 > **Renamed from `tg-analytic-skill`.** The analytics are being repackaged as a
 > PyPI distribution driving an MCP server, and the new name leaves room for
-> media beyond Telegram. Nothing has moved yet — the skill below works exactly
-> as before, and links to the old repository path still redirect.
+> media beyond Telegram. The setup below is the new one; links to the old
+> repository path still redirect.
 
 ## Install
 
-From any project where you want the skill available to Claude Code, use the
+Two commands, run from the project where you want the analytics.
+
+```bash
+uv tool install slop-writer
+slop-writer install     # wires Claude Code: MCP server, permissions, the skill
+slop-writer init        # Telegram credentials and the one-time login
+```
+
+`install` writes three things: the `slop-writer` entry in `.mcp.json`, a
+permission block in `.claude/settings.json` (reads allowed, publishing behind a
+prompt), and the skill into `.claude/skills/slop-writer/`. It deletes one — a
+`.claude/skills/tg-analytic-skill/` left by a pre-0.4 install, which would
+otherwise load alongside the current skill and describe a surface that no
+longer exists. Everything it writes or removes is printed.
+The `.mcp.json` entry holds no machine-specific path, so it is safe to commit —
+a teammate clones, runs `slop-writer init`, and is done. **Restart your MCP
+client afterwards**: `.mcp.json` is read at session start only.
+
+Verified on Claude Code. For Cursor, Codex or the Copilot coding agent,
+`install` prints the entry for you to paste into their config yourself.
+
+`init` asks for your Telegram API credentials
+([create them here](https://my.telegram.org/apps)), writes `.tg-analytic/.env`,
+and runs the login. Run it **in your own terminal** — Telethon prompts for the
+SMS code and 2FA password on stdin, so it cannot go through a tool call. It is
+additive and safe to re-run: it prompts only for what is missing and logs in
+only when there is no working session. The two commands are independent and
+work in either order.
+
+`slop-writer uninstall` removes exactly what `install` wrote. It never touches
+`.tg-analytic/`.
+
+The skill alone, without the server, still installs through the
 [`skills`](https://dev.to/baltz/sharing-skills-with-npx-2nbc) CLI:
 
 ```bash
 npx skills@latest add Lancetnik/slop-writer
 ```
 
-## First-run setup
-
-Run `/setup-tg-analytic` in Claude Code, once per project. It asks for your
-Telegram API credentials ([create them here](https://my.telegram.org/apps)),
-writes `.tg-analytic/.env`, and walks you through the one-time login — which
-you run **in your own terminal**, since Telethon prompts for the SMS code and
-2FA password on stdin:
-
-```bash
-SKILL=.claude/skills/tg-analytic-skill   # adjust to your install
-uv run "$SKILL/scripts/tg_scrape.py" login
-```
-
-That writes `.tg-analytic/session.session`; every later command reuses it.
+Both channels serve the same directory, so whichever runs last wins on disk.
 
 All runtime state — `.env`, the session, per-channel `*.db` files, downloaded
-media — lives in `.tg-analytic/` at your **project root** (the directory you
-run commands from), never inside the skill. Keep it out of git: the session
-file is a live login to your Telegram account.
+media — lives in `.tg-analytic/` at your **project root**, never inside the
+skill. `init` gitignores it for you: the session file is a live login to your
+Telegram account.
 
 ## Usage
 
@@ -67,51 +87,49 @@ Inside Claude Code, ask in plain language:
 > How did the discussion group grow after Tuesday's post?
 > Schedule this draft for Friday at 18:00.
 
-The skill picks the command, runs it from the project root, and pastes back the
-Markdown summary each command prints (top posts by views and reactions, top
-tags, outward forwarders and inward citations with their post ids) — usually
-the answer is right there without dropping into SQL.
+The skill picks the tool, and the tool returns a Markdown summary the agent
+pastes back (top posts by views and reactions, top tags, outward forwarders and
+inward citations with their post ids) — usually the answer is right there
+without dropping into SQL.
 
 ### Keeping the metric history usable
 
-`post_metrics` is a time series, but only of the moments you actually scraped — it cannot be backfilled. A routine `scrape --latest N` re-measures recent posts only, so an older post can sit on the single snapshot it got on its first day forever, and any "how did this post do over time" question then has nothing to answer from. Every so often, run `fetch` over a spread of older ids as well:
+`post_metrics` is a time series, but only of the moments you actually scraped —
+it cannot be backfilled. A routine scrape of the latest N posts re-measures
+recent posts only, so an older post can sit on the single snapshot it got on
+its first day forever, and any "how did this post do over time" question then
+has nothing to answer from. Every so often, ask for a refresh over a spread of
+older post ids as well:
 
-```bash
-uv run "$SKILL/scripts/tg_scrape.py" fetch --channel @yourchannel 340 345 350 355
-```
+> Refresh metrics on posts 340, 345, 350 and 355 of @yourchannel.
 
-Views in particular keep climbing for months, so a post's snapshots are worth collecting long after it stops feeling current.
+Views in particular keep climbing for months, so a post's snapshots are worth
+collecting long after it stops feeling current.
 
-To drive the CLIs by hand, the full command reference lives in the skill:
+The skill's own files, if you want to read what the agent reads:
 
-- [`references/scraping.md`](./skills/tg-analytic-skill/references/scraping.md) — `tg_scrape.py`: `scrape`, `fetch`, `group`, `subscribers`, `views`
-- [`references/querying.md`](./skills/tg-analytic-skill/references/querying.md) — `tg_query.py` and full-text search, over [`references/schema.md`](./skills/tg-analytic-skill/references/schema.md)
-- [`references/publishing.md`](./skills/tg-analytic-skill/references/publishing.md) — `tg_publish.py`: `schedule`, `reschedule`, `edit`, plus [`references/markup.md`](./skills/tg-analytic-skill/references/markup.md)
+- [`SKILL.md`](./skills/slop-writer/SKILL.md) — which tool answers which question, and the four invariants that break an answer silently
+- [`references/analysis.md`](./skills/slop-writer/references/analysis.md) — what the numbers mean and how they mislead, over [`references/schema.md`](./skills/slop-writer/references/schema.md)
+- [`references/publishing.md`](./skills/slop-writer/references/publishing.md) — the write discipline and queue semantics, plus [`references/markup.md`](./skills/slop-writer/references/markup.md)
 
 ## Repository layout
 
 ```
 skills/
-  tg-analytic-skill/
-    SKILL.md          Skill instructions: the branch map, not the flags.
-    scripts/
-      tg_scrape.py           Telethon read CLI (scrape, fetch, group, subscribers, views, scheduled).
-      tg_publish.py          Telethon write CLI (schedule, reschedule, edit).
-      tg_query.py            Read-only SQL CLI.
+  slop-writer/        Shipped both ways: packaged into the wheel (so
+                      `slop-writer install` can copy it out) and served to
+                      `npx skills add` from here. One directory, one version.
+    SKILL.md          Which tool answers which question, and the invariants.
     references/
-      scraping.md     tg_scrape.py commands and selection flags.
-      querying.md     tg_query.py usage and search patterns.
-      publishing.md   tg_publish.py commands and scheduling rules.
+      analysis.md     What the numbers mean, and how they mislead.
+      publishing.md   Write discipline and scheduled-queue semantics.
       schema.md       DB schema reference for writing SQL.
-      markup.md       Supported Markdown -> Telegram markup for tg_publish.
-  setup-tg-analytic/
-    SKILL.md          One-time credential + login setup, run by the user.
+      markup.md       Supported Markdown -> Telegram markup for post bodies.
 src/
-  slop_writer/        The library the CLIs import, published to PyPI. It holds
-                      the domain logic; the three scripts above are argument
-                      parsing and output rendering over it. They declare
-                      `slop-writer` in their PEP-723 headers, so `uv run`
-                      fetches it — nothing is vendored into the skill directory.
+  slop_writer/        The library and the shipped server, published to PyPI. It
+                      holds the domain logic; `server.py` and the dev CLIs in
+                      `tools/` are argument parsing and output rendering over
+                      it — two callers of one set of functions.
     db.py             DB schema (source of truth), paths, open helpers. Stdlib only.
     errors.py         SlopWriterError/UsageError — what the domain raises. Stdlib only.
     query.py          Read-only SQL guards and execution. Stdlib only.
@@ -124,10 +142,19 @@ src/
     publish.py        The write surface: schedule / reschedule / edit.
     render.py         Markdown renderers for the per-command summaries.
     markdown.py       Markdown -> Telethon MessageEntity (publish only).
-tools/
-  check_schema_doc.py  Dev-only: guard SCHEMA <-> references/schema.md drift (not
-                       shipped). Pinned to this checkout, not to the released
-                       package, so it guards the working tree.
+    server.py         The MCP server and its read tools.
+    install.py        `install`/`uninstall`: the agent wiring. No Telegram.
+    init.py           `init`: credentials, gitignore, the TTY login. No MCP.
+    cli.py            The `slop-writer` console script (argparse).
+tools/               Dev-only, never shipped to users.
+  check_schema_doc.py  Guard SCHEMA <-> references/schema.md drift. Pinned to
+                       this checkout, not to the released package, so it guards
+                       the working tree.
+  tg_scrape.py         The old read CLI (scrape, fetch, group, subscribers,
+  tg_publish.py        views, scheduled), write CLI and SQL CLI. Undocumented
+  tg_query.py          and unsupported: the MCP tools are the surface now.
+                       Kept because `login` needs a TTY and because they are
+                       the only way to exercise Telethon without a client.
 ```
 
 Runtime state (`.env`, the Telethon session, per-channel `*.db` files, media)

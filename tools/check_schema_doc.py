@@ -16,9 +16,9 @@ in slop_writer/db.py) and the DDL that references/schema.md restates for the
 SQL-writing agent.
 
 Dev-only tooling: skill *users* never run this. It guards the source tree
-while the skill is being developed, so it lives outside the distributed
-skill (tools/, not skills/tg-analytic-skill/scripts/). Run after editing
-either side:
+while the skill is being developed, so it lives in tools/ — which since #30
+is where every dev-only script lives, the skill directory having been reduced
+to the five files the agent reads. Run after editing either side:
 
     uv run tools/check_schema_doc.py
 
@@ -36,7 +36,7 @@ from slop_writer.db import FTS_SCHEMA, SCHEMA
 
 SCHEMA_MD = (
     Path(__file__).resolve().parent.parent
-    / "skills" / "tg-analytic-skill" / "references" / "schema.md"
+    / "skills" / "slop-writer" / "references" / "schema.md"
 )
 
 

@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "slop-writer>=0.2,<0.3",
+#     "slop-writer>=0.4,<0.5",
 #     "python-dotenv>=1.0",
 #     "typer>=0.12,<1",
 # ]
@@ -169,7 +169,7 @@ def scrape_cmd(
             channel_info,
         )
     )
-    summarize_scrape(result.channel, result.posts, result.channels)
+    print(summarize_scrape(result.channel, result.posts, result.channels))
 
 
 @app.command("fetch")
@@ -202,7 +202,7 @@ def fetch_cmd(
             channel_info,
         )
     )
-    summarize_scrape(result.channel, result.posts, result.channels)
+    print(summarize_scrape(result.channel, result.posts, result.channels))
 
 
 @app.command("subscribers")
@@ -215,7 +215,7 @@ def subscribers(
     (subscribers + subscriber_sources tables)."""
     _prepare(session_file)
     result = _run(fetch_subscribers(channel, output_dir, session_file))
-    summarize_subscribers(result.channel, result.rows)
+    print(summarize_subscribers(result.channel, result.rows))
 
 
 @app.command("views")
@@ -226,12 +226,14 @@ def views(
     """Print views per hour of day to the console: hour|views."""
     _prepare(session_file)
     result = _run(fetch_views_by_hour(channel, session_file))
-    summarize_views(
-        result.channel,
-        result.hours,
-        result.views,
-        result.period_start,
-        result.period_end,
+    print(
+        summarize_views(
+            result.channel,
+            result.hours,
+            result.views,
+            result.period_start,
+            result.period_end,
+        )
     )
 
 
@@ -247,7 +249,7 @@ def scheduled(
     channel."""
     _prepare(session_file)
     result = _run(list_scheduled(channel, session_file))
-    summarize_scheduled(result.channel, result.items)
+    print(summarize_scheduled(result.channel, result.items))
 
 
 @app.command("group")
@@ -314,12 +316,14 @@ def group_cmd(
             limit, offset_id, offset_date, latest,
         )
     )
-    summarize_group(
-        result.label,
-        result.overview,
-        result.messages,
-        result.events,
-        result.threads,
+    print(
+        summarize_group(
+            result.label,
+            result.overview,
+            result.messages,
+            result.events,
+            result.threads,
+        )
     )
 
 

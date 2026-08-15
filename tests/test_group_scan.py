@@ -9,6 +9,7 @@ taking a client instead of opening its own session.
 import sqlite3
 
 import pytest
+from telethon.errors import ChannelPrivateError
 from telethon.tl.types import MessageActionChatAddUser, MessageActionChatDeleteUser
 
 from slop_writer.db import db_path_for, open_db
@@ -108,6 +109,78 @@ def test_a_typo_creates_no_database(tmp_path):
 
     assert exc.value.code == "CANNOT_RESOLVE"
     assert list(tmp_path.iterdir()) == []
+
+
+# --------------------------------------------------------------------------
+# Membership — the requirement the tool descriptions state and the scan spent
+# three calls failing to name (#35)
+# --------------------------------------------------------------------------
+
+
+def test_a_linked_group_this_account_is_not_in_is_not_a_resolve_failure(tmp_path):
+    """The case the code was written for. The channel resolves, Telegram hands
+    over the discussion group's *id*, and then refuses the group itself — so
+    the handle is provably fine and only membership is missing."""
+    client = linked_client([])
+    client.entities[GROUP_ID] = ChannelPrivateError(None)
+
+    with pytest.raises(SlopWriterError) as exc:
+        scan(client, tmp_path)
+
+    assert exc.value.code == "NOT_A_MEMBER"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_linked_group_missing_from_the_session_cache_reads_the_same_way(tmp_path):
+    """Telethon's answer for a peer it has no access hash for is a bare
+    `ValueError` — indistinguishable from a typo *in general*, but not here:
+    `linked_chat_id` came from Telegram one call earlier, so the group exists
+    and an account that were in it would have seen it."""
+    client = linked_client([])
+    del client.entities[GROUP_ID]
+
+    with pytest.raises(SlopWriterError) as exc:
+        scan(client, tmp_path)
+
+    assert exc.value.code == "NOT_A_MEMBER"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_group_that_refuses_its_own_full_channel_is_a_membership_failure(tmp_path):
+    """`GetFullChannelRequest` on the group is the second call past
+    `resolve_peer`, and it can refuse where `get_entity` did not."""
+    client = linked_client([])
+    client.full[GROUP_ID] = ChannelPrivateError(None)
+
+    with pytest.raises(SlopWriterError) as exc:
+        scan(client, tmp_path)
+
+    assert exc.value.code == "NOT_A_MEMBER"
+
+
+def test_a_group_that_resolves_but_refuses_its_history_is_still_not_a_member(tmp_path):
+    """Resolving is not reading. An entity cached from an earlier membership
+    resolves fine and then refuses `iter_messages` — the third site, and the
+    only one that fires after `open_db`, so this one *does* leave the file."""
+    client = linked_client([], iter_error=ChannelPrivateError(None))
+
+    with pytest.raises(SlopWriterError) as exc:
+        scan(client, tmp_path)
+
+    assert exc.value.code == "NOT_A_MEMBER"
+
+
+def test_the_membership_failure_names_membership_and_not_admin_rights(tmp_path):
+    """The distinction the tool descriptions make ("requires membership in the
+    group (not admin)") has to survive into the error, or the agent reads it as
+    NOT_ADMIN and gives up on a group it could simply join."""
+    client = linked_client([])
+    client.entities[GROUP_ID] = ChannelPrivateError(None)
+
+    with pytest.raises(SlopWriterError) as exc:
+        scan(client, tmp_path)
+
+    assert "not admin rights" in (exc.value.hint or "")
 
 
 def test_a_standalone_group_reports_no_threads(tmp_path):

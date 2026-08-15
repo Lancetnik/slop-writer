@@ -1,14 +1,29 @@
-# tg-analytic-skill
+# slop-writer
 
-A Claude Code skill that scrapes a Telegram channel into a per-channel SQLite
-DB and answers analytics questions over it. It can also queue a future post to
-the channel (the one write capability; everything else only reads).
+An MCP server and a Claude Code skill that scrape a Telegram channel into a
+per-channel SQLite DB and answer analytics questions over it. They can also
+queue a future post to the channel (the one write capability; everything else
+only reads).
 
 ## Language
+
+**Project**:
+The directory the server runs in — one `.tg-analytic/`, and the unit of
+state. Holds any number of scraped channels, one of which is primary.
 
 **Channel**:
 The Telegram broadcast channel being analyzed (e.g. @fastnewsdev). Posts
 originate here; only admins can post.
+
+**Scraped channel**:
+A channel this project holds a local database for, i.e. one scanned at least
+once. The set of them is what the project can answer for without reaching
+Telegram.
+
+**Primary channel**:
+The scraped channel an agent falls back to when the user names none.
+Remembered by the client across sessions, never stored in the project.
+_Avoid_: default channel, main channel
 
 **Discussion group**:
 The supergroup linked to the channel (`linked_chat_id`), where channel posts
@@ -18,7 +33,9 @@ _Avoid_: comments group, chat, attached group
 **Standalone group**:
 A supergroup analyzed in its own right, not linked to any channel under
 analysis. Has join/leave events and engagement but no threads (threads
-require an originating channel post).
+require an originating channel post). Standalone describes the analysis, not
+the supergroup: the same one is a discussion group once its channel is
+analyzed, so a thread-free record says how it was scanned, not what it is.
 
 **Post**:
 A message published in the channel. Identified by its channel message id.

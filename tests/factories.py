@@ -265,6 +265,15 @@ class FakeClient:
     * `full` / `forwards` / `admin_log` answer the three raw TL requests.
       `admin_log_error` makes the log raise instead, which is what a non-admin
       account gets.
+    * An **exception** stored in `entities` or `full` is raised instead of
+      returned. Telegram's refusals are answers, not absences: a peer this
+      account may not see comes back as `ChannelPrivateError`, and the code
+      that separates it from a bad handle (#35) is only reachable if the fake
+      can say so. `iter_error` does the same for the history read, which is
+      the failure a *resolvable* group still produces for a non-member.
+    * `send_error` makes `send_message` / `send_file` raise — how Telegram
+      reports a body over the cap, since this package deliberately does not
+      measure it.
 
     Every call is recorded so a test can assert a round-trip did *not* happen.
     """
@@ -279,6 +288,8 @@ class FakeClient:
         forwards: dict[int, list] | None = None,
         admin_log: list | None = None,
         admin_log_error: Exception | None = None,
+        iter_error: Exception | None = None,
+        send_error: Exception | None = None,
     ) -> None:
         self.messages = list(messages or [])
         self.comments = comments or {}
@@ -292,7 +303,10 @@ class FakeClient:
         self.forwards = forwards or {}
         self._admin_log = list(admin_log or [])
         self.admin_log_error = admin_log_error
+        self.iter_error = iter_error
+        self.send_error = send_error
 
+        self.sends: list[dict] = []               # send_message/send_file kwargs
         self.calls: list[list[int]] = []          # get_messages id lists
         self.iter_calls: list[dict] = []          # iter_messages kwargs
         self.entity_calls: list = []
@@ -317,6 +331,8 @@ class FakeClient:
                 "reply_to": reply_to,
             }
         )
+        if self.iter_error is not None:
+            raise self.iter_error
         if reply_to is not None:
             window = list(self.comments.get(reply_to, []))
         elif reverse:
@@ -341,7 +357,25 @@ class FakeClient:
         key = entity_key(peer)
         if key not in self.entities:
             raise ValueError(f"no entity for {key!r}")
-        return self.entities[key]
+        entity = self.entities[key]
+        if isinstance(entity, Exception):
+            raise entity
+        return entity
+
+    # -- writes -------------------------------------------------------------
+
+    async def send_message(self, entity, text, **kwargs):
+        self.sends.append({"entity": entity, "text": text, **kwargs})
+        if self.send_error is not None:
+            raise self.send_error
+        return msg(1000, text=text)
+
+    async def send_file(self, entity, files, **kwargs):
+        self.sends.append({"entity": entity, "files": files, **kwargs})
+        if self.send_error is not None:
+            raise self.send_error
+        sent = msg(1000, text=kwargs.get("caption") or "")
+        return [sent] if isinstance(files, list) else sent
 
     async def download_media(self, msg, file=None):
         """Writes the file for real: `download_photo` skips the download when
@@ -360,7 +394,10 @@ class FakeClient:
             key = entity_key(request.channel)
             if key not in self.full:
                 raise ValueError(f"no full-channel entry for {key!r}")
-            return self.full[key]
+            full = self.full[key]
+            if isinstance(full, Exception):
+                raise full
+            return full
         if name == "GetMessagePublicForwardsRequest":
             return PublicForwards(self.forwards.get(request.msg_id, []))
         if name == "GetAdminLogRequest":

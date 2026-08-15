@@ -1,7 +1,7 @@
 [project]
 name = "slop-writer"
-version = "0.2.0"
-description = "Telegram channel analytics: the library behind the slop-writer skill, and later its MCP server."
+version = "0.4.0"
+description = "Telegram channel analytics as MCP tools: the server behind the slop-writer skill, and the library behind both."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -20,22 +20,34 @@ classifiers = [
 # splitting them into extras buys a few MB at the cost of every caller having
 # to know which extra a module lives behind. Revisit if the set grows heavy.
 #
-# python-dotenv is deliberately absent: nothing here reads a .env file. `tg.py`
-# reads os.environ and the *caller* populates it, so dotenv stays a dependency
-# of the scripts that call load_dotenv. `typer` is gone as of 0.2.0: the domain
-# raises `slop_writer.errors.SlopWriterError` instead of reporting its own
-# failures, so nothing in the library knows what a CLI is.
+# `typer` is gone as of 0.2.0: the domain raises
+# `slop_writer.errors.SlopWriterError` instead of reporting its own failures,
+# so nothing in the library knows what a CLI is. `slop_writer.cli` is a CLI and
+# uses argparse — a three-flag launcher for the server does not earn a
+# framework in every installed copy.
+#
+# python-dotenv arrived with 0.3.0 for the same reason it was absent before:
+# the rule is that whoever decides the project root populates the environment,
+# and `serve` is now one of those callers. `tg.py` still only reads os.environ.
+#
+# `mcp` is pinned below 2: `structured_output=False` is probed and depended on
+# in that line (#16), and v2 moved FastMCP to `mcp.server.mcpserver.MCPServer`
+# with unverified kwargs.
 dependencies = [
     "telethon>=1.36,<2",
     "mistune>=3.0",
+    "mcp>=1.10,<2",
+    "python-dotenv>=1.0",
 ]
 
 [project.urls]
 Repository = "https://github.com/Lancetnik/slop-writer"
 Issues = "https://github.com/Lancetnik/slop-writer/issues"
 
-# No [project.scripts]: the dev CLIs stay PEP-723 scripts under `uv run`. The
-# `slop-writer` command arrives with `install` / `init` / `serve`.
+# The dev CLIs stay PEP-723 scripts under `uv run`; this is the shipped
+# command — `install`, `init`, `serve`, `uninstall` as of #20.
+[project.scripts]
+slop-writer = "slop_writer.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
@@ -55,4 +67,14 @@ dev = ["pytest>=8,<9"]
 # the result, so a stale wheel fails loudly instead of passing quietly.
 testpaths = ["tests"]
 addopts = "--strict-markers --strict-config"
+
+# The skill ships inside the wheel so `slop-writer install` can copy it out
+# (#19) and one version covers both (#21). It cannot live under
+# `src/slop_writer/`: the same directory is what `npx skills add` serves from
+# the repository root, and uv_build packs only files under the module root —
+# a symlink into `skills/` fails the build outright. Purelib data is what
+# bridges the two: the directory installs *beside* the package in
+# site-packages, and `install.skill_source` looks for it there.
+[tool.uv.build-backend]
+data = { purelib = "skills" }
 

@@ -43,17 +43,51 @@ as their second hop.
   `querying.md` — so diagnosis arrives with the command instead of 200 lines
   away. Rows whose "fix" was to tell the user what the error already says were
   dropped.
-- First-run setup left the skill entirely: it is `skills/setup-tg-analytic/`,
+- First-run setup left the skill entirely: it was `skills/setup-tg-analytic/`,
   a user-invoked skill (ADR-adjacent to 0003's split of read from write — the
   human, not the agent, holds the interactive login). `SKILL.md` says nothing
-  about it: `_credentials` and `_require_session` carry the whole instruction
-  ("ask the user to run `/setup-tg-analytic`, then stop"), so it arrives with
-  the failure that needs it, at zero context cost, and reaches users driving
-  the CLIs by hand too. A line in the body would have been that message's
-  second copy — one that only pays off in the runs where it never fires.
-- `.env.example` was deleted; the setup skill writes `.tg-analytic/.env`
-  itself. A template file only worked when the reader could find the skill
-  directory, which is the thing that varies by install method.
+  about it: `_credentials` and `_require_session` carry the whole instruction,
+  so it arrives with the failure that needs it, at zero context cost, and
+  reaches users driving the CLIs by hand too. A line in the body would have
+  been that message's second copy — one that only pays off in the runs where
+  it never fires.
+
+  **Superseded in part by Lancetnik/slop-writer#20**, which deleted that skill:
+  setup is now `slop-writer init`, a terminal command. The *placement* argument
+  above survives intact and got stronger — the remedy still travels only in the
+  error text (`hint`), which is now the sole thing that tells an agent what to
+  ask for. What changed is that credentials no longer pass through the model's
+  context at all, which a skill could not offer however it was written.
+- `.env.example` was deleted; setup writes `.tg-analytic/.env` itself. A
+  template file only worked when the reader could find the skill directory,
+  which is the thing that varies by install method.
 - Adding a command is now a one-file edit in `references/`. `SKILL.md` changes
   only when a new *branch* appears — a fourth CLI, or a new always-true
   invariant.
+
+## Second iteration (Lancetnik/slop-writer#30)
+
+The decision holds; what it routes to changed. With the CLIs replaced by MCP
+tools, the flags each reference existed to carry moved into the tool
+descriptions, and a `references/` file per CLI stopped having a subject.
+
+- `scraping.md` is **deleted** and `querying.md` is now `analysis.md`. The
+  routing table is question → *tool*, not question → CLI, and it names the
+  three confusable pairs outright — `scrape_posts`/`refresh_posts`,
+  `scan_linked_group`/`scan_standalone_group`, and the two stats tools —
+  because every tool sits behind `ToolSearch` (#23 found deferral starts at
+  four) and the router is the only thing between the agent and guessing a name.
+- The body absorbed the separate `tools.md` #15 had planned. Once "run from the
+  project root" and `<skill_dir>` went to the server, a body that only routed
+  to another router was empty.
+- The split is now checkable rather than editorial: **no metric fact in a tool
+  description, no argument name in the skill.** That is what keeps a new tool
+  from re-growing the wall of text this ADR removed — a description has no room
+  for one, and the skill has no vocabulary for flags.
+- The reference files stay the second hop, but there are four rather than five,
+  and two of them (`schema.md`, `markup.md`) are unchanged from the first
+  iteration.
+
+The move as a whole is recorded by
+[0006](./0006-the-shipped-artifact-is-a-package-driving-an-mcp-server.md); this
+amendment covers only what #30 changed about *this* decision.

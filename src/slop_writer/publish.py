@@ -15,6 +15,13 @@ Input validation is split from the network work on purpose: `prepare_schedule`
 takes everything the caller supplied and fails before a session is required,
 which keeps a bad `at` or a missing photo cheap to report and stops the two
 callers (CLI, server) from having to reproduce the same order of checks.
+
+Messages here name **arguments, never CLI flags** — the package-wide rule, now
+stated in `errors.py`. This module is where it was found broken (#18) and it
+owns the one seam for the case the rule cannot cover: the body's origin
+genuinely differs per caller, so the caller supplies it (`body_source`) rather
+than the raise site guessing. The CLI says "stdin" or `--file draft.md`, the
+server says "the `body` argument", and both are right for their reader.
 """
 
 import logging
@@ -81,22 +88,23 @@ def parse_schedule_time(at: str) -> datetime:
         dt = datetime.fromisoformat(normalized)
     except ValueError:
         raise UsageError(
-            f"Invalid --at {at!r}: use ISO-8601 with an offset, e.g. "
-            "2026-06-27T18:00:00+03:00.",
+            f"Invalid schedule time {at!r}: use ISO-8601 with an offset, "
+            "e.g. 2026-06-27T18:00:00+03:00.",
             code="INVALID_SCHEDULE_TIME",
         ) from None
     if dt.tzinfo is None:
         raise UsageError(
-            f"--at {at!r} has no UTC offset. Naive times are ambiguous for a "
-            "published post — include one, e.g. 2026-06-27T18:00:00+03:00.",
+            f"Schedule time {at!r} has no UTC offset. Naive times are "
+            "ambiguous for a published post — include one, e.g. "
+            "2026-06-27T18:00:00+03:00.",
             code="INVALID_SCHEDULE_TIME",
         )
     earliest = datetime.now(UTC) + MIN_LEAD
     if dt < earliest:
         local_earliest = earliest.astimezone(dt.tzinfo).isoformat(timespec="minutes")
         raise SlopWriterError(
-            f"--at {dt.isoformat()} is too soon: posts must be scheduled at "
-            f"least 1 hour ahead (earliest {local_earliest}).",
+            f"Schedule time {dt.isoformat()} is too soon: posts must be "
+            f"scheduled at least 1 hour ahead (earliest {local_earliest}).",
             code="INVALID_SCHEDULE_TIME",
         )
     return dt
@@ -108,19 +116,23 @@ def check_photos(photos: list[str]) -> list[Path]:
     if len(photos) > MAX_ALBUM:
         raise UsageError(
             f"Got {len(photos)} photos; a Telegram album holds at most "
-            f"{MAX_ALBUM}."
+            f"{MAX_ALBUM}.",
+            code="INVALID_ARGUMENT",
         )
     paths = []
     for raw in photos:
         path = Path(raw)
         if not path.is_file():
-            raise UsageError(f"--photo {raw!r}: file not found.")
+            raise UsageError(
+                f"Photo {raw!r}: file not found.", code="INVALID_ARGUMENT"
+            )
         if path.suffix.lower() not in PHOTO_EXTS:
             raise UsageError(
-                f"--photo {raw!r}: extension {path.suffix!r} is not a Telegram "
+                f"Photo {raw!r}: extension {path.suffix!r} is not a Telegram "
                 f"photo type ({', '.join(sorted(PHOTO_EXTS))}). Other files "
                 "would go out as document attachments — convert the image "
-                "first."
+                "first.",
+                code="INVALID_ARGUMENT",
             )
         paths.append(path)
     return paths
@@ -138,7 +150,9 @@ def render_body(
     if not text.strip():
         if allow_empty:
             return "", []
-        raise UsageError(f"{source} renders to an empty post.")
+        raise UsageError(
+            f"{source} renders to an empty post.", code="INVALID_ARGUMENT"
+        )
     return text, entities
 
 
@@ -158,12 +172,18 @@ def prepare_schedule(
     when = parse_schedule_time(at)
     photos = check_photos(photo_paths) if photo_paths else []
     if caption_above and not photos:
-        raise UsageError("--caption-above only makes sense with --photo.")
+        raise UsageError(
+            "Placing the caption above needs at least one photo attached.",
+            code="INVALID_ARGUMENT",
+        )
     text, entities = render_body(
         body, allow_empty=bool(photos), source=body_source
     )
     if caption_above and not text.strip():
-        raise UsageError("--caption-above needs a non-empty body to place above.")
+        raise UsageError(
+            "Placing the caption above needs a non-empty body to place.",
+            code="INVALID_ARGUMENT",
+        )
     return ScheduleDraft(text, entities, when, photos, caption_above)
 
 
@@ -178,7 +198,12 @@ def _too_long(text: str, *, media: bool) -> SlopWriterError:
     Length is deliberately NOT checked client-side: the cap depends on the
     account (photo captions: 1024 UTF-16 units, 2048 with Premium; text
     posts: 4096) and Telegram is the authority — a hardcoded check would
-    wrongly block Premium accounts. Rejection leaves nothing queued/changed."""
+    wrongly block Premium accounts. Rejection leaves nothing queued/changed.
+
+    That division is also why this is the only place `MESSAGE_TOO_LONG` can be
+    named: the verdict arrives over the network, so the code attaches where
+    Telethon's error is translated rather than at a length check that would
+    have to guess the cap it is enforcing."""
     n = _utf16_len(text)
     if media:
         cap = "photo-caption cap (1024 UTF-16 units, 2048 with Telegram Premium)"
@@ -186,7 +211,11 @@ def _too_long(text: str, *, media: bool) -> SlopWriterError:
         cap = "text-post cap (4096 UTF-16 units)"
     return SlopWriterError(
         f"Telegram rejected the body: {n} UTF-16 units is over this account's "
-        f"{cap}. Shorten the body — nothing was queued or changed."
+        f"{cap}. Shorten the body — nothing was queued or changed.",
+        hint="Shorten the body and retry. A photo caption is capped far below "
+        "a text post, so sending the same body without photos also raises the "
+        "ceiling.",
+        code="MESSAGE_TOO_LONG",
     )
 
 

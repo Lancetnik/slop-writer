@@ -1,6 +1,6 @@
 # Database schema (`.tg-analytic/<channel>.db`)
 
-Read this before writing SQL through `tg_query.py`. One SQLite file per channel — leading `@` is stripped from the filename. **There is no `channel` column anywhere** — the channel is implicit in which DB you opened. Don't `WHERE channel = ...`.
+Read this before writing SQL for `run_query`. One SQLite file per channel — leading `@` is stripped from the filename. **There is no `channel` column anywhere** — the channel is implicit in which DB you opened. Don't `WHERE channel = ...`.
 
 The literal `CREATE` statements below restate the `SCHEMA` and `FTS_SCHEMA` constants in the `slop-writer` package's `db.py` (the source of truth) — every column the agent can SELECT, JOIN, or filter on appears there. Notes underneath each table cover only what the DDL can't convey (storage format, semantics, gotchas).
 
@@ -191,7 +191,7 @@ CREATE TABLE posts (
 - `text` — post body, plain string. Empty for pure-media posts.
 - `reply_to_msg_id` — non-null only if the post is a reply (rare on broadcast channels).
 - `tags` — **JSON array of hashtag strings without the `#`**, e.g. `["AI", "claude", "cursor"]`. Empty posts store `[]`. Query with `json_each(tags)` to explode, or `tags LIKE '%"AI"%'` for a quick contains check. These are the labels the author typed on some posts — read `text` to classify what posts are actually about.
-- `grouped_id` — Telegram album id. Non-null means the post is an album; **exactly one row per `grouped_id`** — the caption carrier — and its members live in `post_attachments`. Two rows sharing a `grouped_id` means a stale DB (pre-fix scrapes could split an album across rows and double-count it in every `SUM`/`AVG`); re-run any `tg_scrape.py` command to clean it up.
+- `grouped_id` — Telegram album id. Non-null means the post is an album; **exactly one row per `grouped_id`** — the caption carrier — and its members live in `post_attachments`. Two rows sharing a `grouped_id` means a stale DB (pre-fix scrapes could split an album across rows and double-count it in every `SUM`/`AVG`); re-run any scan to clean it up.
 - `forwarder_from_channel` — direction: **YOU reposted them.** If this post is a forward of another channel's post (i.e. not your original content), the source channel link (joins `public_channels.link`); NULL otherwise. The source channel is auto-inserted into `public_channels`. For the opposite direction (others reposting you) see `public_shares`.
 
 ## `post_attachments`
@@ -211,7 +211,7 @@ CREATE TABLE post_attachments (
 - `attachment_id` — `== post_id` for single-media posts; **differs** for album members (each album item is a separate Telegram message).
 - `link` — `https://t.me/<channel>/<attachment_id>`.
 - `media_type` — Telethon class name. Common values: `photo`, `document`, `MessageMediaWebPage`, `MessageMediaPoll`, etc. Filter explicitly by the value you care about — don't assume only `photo`/`document` exist.
-- `photo_path` — local JPEG path for photos; NULL when scraped with `--no-media` or for non-photo media.
+- `photo_path` — local JPEG path for photos; NULL for non-photo media, and NULL when the scan that stored the row skipped media downloads.
 
 ## `post_metrics` — append-only time series
 
@@ -232,7 +232,7 @@ CREATE TABLE post_metrics (
 - `id` — autoincrement surrogate. Strictly increasing — newer rows always have higher `id` than older rows, even within the same `scrape_date` second. **Use `MAX(id)` for "latest", not `MAX(scrape_date)`.**
 - `post_id` — FK to `posts.id`. Indexed (`idx_post_metrics_post`).
 - `scrape_date` — ISO-8601 with microseconds, e.g. `2026-05-28T19:14:13.024294+00:00`. One row per `(post_id, scrape run)`; the same post gets new rows over time.
-- `views`, `forwards`, `reactions`, `comments_count` — cumulative totals as of `scrape_date`, not per-period counts. They settle at different speeds and `views` never settles at all, so a figure from this table means something only alongside the post's age. The *Every metric is a snapshot* section of [querying.md](querying.md) has the rules for reading them.
+- `views`, `forwards`, `reactions`, `comments_count` — cumulative totals as of `scrape_date`, not per-period counts. They settle at different speeds and `views` never settles at all, so a figure from this table means something only alongside the post's age. The *Every metric is a cumulative snapshot* section of [analysis.md](analysis.md) has the rules for reading them.
 - `stars` — paid reactions count (Telegram Stars). Separate from `reactions`.
 - `public_forwards_count` — count of public channels that re-shared this post (from Telegram's stats API; requires admin to populate). Details in `public_shares`.
 
@@ -265,7 +265,7 @@ CREATE TABLE public_channels (
 ```
 
 - `link` — `https://t.me/<username>` (public) or `https://t.me/c/<channel_id>` (private/restricted). Joins to `posts.forwarder_from_channel` (inward) and `public_shares.forwarder_link` (outward).
-- `name`, `description`, `subscribers` — populated only when the scrape ran with `--channel-info` (default on). Older rows without channel-info data have these as NULL.
+- `name`, `description`, `subscribers` — populated by scans that looked up channel details, which is the normal case. Older rows predating that lookup have these as NULL.
 - `last_seen` — ISO-8601 timestamp of the most recent scrape that observed this channel.
 
 ## `public_shares` — who re-shared YOUR posts
@@ -369,7 +369,7 @@ CREATE TABLE group_messages (
   posted *as a channel* (Telegram's "send as" feature), `user_id` is the
   channel's id and `user_name`/`user_username` carry the channel's
   title/username. Which ids belong to the channel's author, staff or bots
-  is not derivable from the channel handle — [querying.md](querying.md)
+  is not derivable from the channel handle — [analysis.md](analysis.md)
   has the inventory query to run before aggregating.
 - `author` — derived convenience identity: best available human-readable
   name (`user_username`, else `user_name`, else `user_id` as text).
