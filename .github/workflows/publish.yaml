@@ -1,0 +1,65 @@
+# PyPI's trusted publisher for `slop-writer` is bound to this workflow's
+# FILENAME (publish.yaml). Renaming this file silently breaks publishing: the
+# OIDC claim stops matching and PyPI rejects the upload.
+
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Least privilege by default; the publish job opts into id-token below.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: false
+
+      # --no-sources ignores workspace/source overrides, so what is uploaded is
+      # what a user resolving from PyPI will actually get.
+      - name: Build
+        run: uv build --no-sources
+
+      # Versions on PyPI are immutable, so a tag that disagrees with
+      # pyproject.toml is unfixable after the fact — catch it before upload.
+      - name: Tag must match the package version
+        if: github.event_name == 'release'
+        run: |
+          version=$(uv version --short --frozen --no-sync)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::release tag '$tag' does not match pyproject version '$version'"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Split from the build job on purpose: the OIDC token that can publish to
+    # PyPI is never exposed to dependency resolution or build-time code.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: astral-sh/setup-uv@v9
+
+      # No credentials: uv detects GitHub Actions OIDC and mints a PyPI token.
+      - name: Publish
+        run: uv publish
