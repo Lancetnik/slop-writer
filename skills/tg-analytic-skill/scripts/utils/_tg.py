@@ -16,6 +16,7 @@ from telethon.errors import (
     UsernameInvalidError,
     UsernameNotOccupiedError,
 )
+from telethon.tl.types import User
 
 from ._common import DATA_DIR
 
@@ -106,9 +107,13 @@ async def _resolve_peer(client: TelegramClient, channel: str):
 
     A typo'd handle is the common failure and Telethon surfaces it as a bare
     ValueError traceback; callers open their DB only after this returns, so a
-    typo no longer leaves an empty .tg-analytic/<typo>.db behind either."""
+    typo no longer leaves an empty .tg-analytic/<typo>.db behind either.
+
+    Handles resolving to a person are rejected: every command targets a
+    channel or group, and reading (or posting into) someone's private chat
+    is out of scope for this skill by design."""
     try:
-        return await client.get_entity(channel)
+        entity = await client.get_entity(channel)
     except (
         ValueError,
         UsernameInvalidError,
@@ -122,3 +127,11 @@ async def _resolve_peer(client: TelegramClient, channel: str):
             err=True,
         )
         raise typer.Exit(code=1) from None
+    if isinstance(entity, User):
+        typer.echo(
+            f"{channel} is a user, not a channel or group. Private chats are "
+            "not supported - pass a channel or group handle.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return entity
