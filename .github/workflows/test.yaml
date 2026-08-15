@@ -25,10 +25,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The floor from requires-python, and the newest supported release.
-        # Nothing between them exercises a different code path, but the floor
-        # is where a 3.12+ idiom would slip in unnoticed.
-        python: ["3.11", "3.13"]
+        # Every CPython from the requires-python floor up to the newest stable
+        # release — the range a `pip install slop-writer` can actually land on.
+        # The floor is where a 3.12+ idiom would slip in unnoticed; the ceiling
+        # is where a dependency stops working before users hit it. Add the next
+        # version when it goes final and drop the floor only by moving
+        # requires-python, which is a release decision, not a CI one.
+        # No beta (3.15 is at b4 today): a red X on an unreleased interpreter
+        # says nothing about what we ship.
+        python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       # Actions pinned to commit SHAs, matching publish.yaml. Bump the SHA and
       # the trailing version comment together.
