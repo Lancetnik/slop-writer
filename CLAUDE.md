@@ -73,11 +73,38 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   - `markdown.py` — `publish.py` only: walks mistune's Markdown AST straight
     to Telethon `MessageEntity` objects (no HTML, no sulguk). Tables render as
     monospace `pre`; UTF-16 offset accounting lives here.
+- `tests/` — the package suite. **`uv run pytest`** (from the repo root; `uv`
+  installs the project editable, so it exercises the working tree). It targets
+  `slop_writer.*` functions and their return shapes, **never** a script's
+  stdout or exit code — the CLI is scheduled to stop being the exercise
+  surface, so a test that asserted on rendered Markdown would be deleted by
+  the MCP move. Where the #15 vocabulary names a failure, assert on
+  `SlopWriterError.code`, not on the message.
+  - `factories.py` holds the faking policy: **messages are real Telethon TL
+    objects** (`complete_albums`/`scan_group` gate on `isinstance`, and
+    Telethon is already a hard dependency), **the client is hand-faked**.
+    Recorded fixtures were rejected — they pin a wire format the `<2` pin
+    already expects to move. One quirk the factories hide: `Message.text` is a
+    property returning `None` until assigned, and every `msg.text or ""` in
+    the package depends on it.
+  - Nothing in the suite touches a Telegram session, `.tg-analytic/`, or the
+    network. Live runs stay the acceptance step; they are no longer the only
+    one.
+  - pytest lives in a PEP 735 `[dependency-groups] dev` — never an extra, so
+    it cannot reach a user's install. CI asserts that against the built wheel.
+  - `asyncio.run` via `tests/conftest.py:run`, not pytest-asyncio: four async
+    functions don't justify a plugin whose `asyncio_mode` silently skips tests.
+- `.github/workflows/test.yaml` — push/PR CI: the suite on 3.11 + 3.13, the
+  wheel-metadata guard, and `check_schema_doc.py`. Deliberately **not** part of
+  `publish.yaml`, whose *filename* is bound to PyPI's trusted publisher.
 - `tools/check_schema_doc.py` — **dev-only** drift guard, kept *outside* the
   skill so it isn't shipped to users; run after editing `SCHEMA` or
   `references/schema.md`. Its PEP-723 header pins `slop-writer` to *this
   checkout* (`[tool.uv.sources]`, editable), never to the released version —
   a guard reading the published schema would pass while the tree disagrees.
+  It stays a standalone script rather than becoming a test: its subject is a
+  document under `skills/` that the package doesn't ship, and its editable pin
+  is a different resolution from the suite's. CI runs it as its own step.
 - `.tg-analytic/` — **runtime state at the project root** (cwd), gitignored:
   `.env`, `session.session`, one `<channel>.db` per channel, `media/`. The
   **CLIs** anchor this on `Path.cwd()` (`PROJECT_ROOT` at the top of each

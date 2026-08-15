@@ -9,9 +9,10 @@ Nothing is re-exported here on purpose. Import the module you need:
     from slop_writer.group import classify_service_message
 
 A star-shaped `__init__` would make `import slop_writer.db` drag Telethon and
-mistune in behind it, and the Telegram-free half of this package — the schema,
-the SQL helpers, the group classification — is exactly what a query tool or a
-test wants without a client.
+mistune in behind it, and the Telegram-free half of this package — `db`,
+`query` and `errors` — is exactly what a query tool or a test wants without a
+client. (`group` used to belong to that set; it gave up the property in 0.2.0
+when the package settled on one flat dependency set.)
 
 `__version__` is read from the installed distribution metadata rather than
 written here, so `pyproject.toml` stays the single place a version is declared.
