@@ -16,12 +16,12 @@ takes everything the caller supplied and fails before a session is required,
 which keeps a bad `at` or a missing photo cheap to report and stops the two
 callers (CLI, server) from having to reproduce the same order of checks.
 
-Messages here name **arguments, never CLI flags**. The same string reaches a
-human reading stderr and a model reading a tool result, and `--at` is a thing
-only one of them has — a model told to fix `--at` is being pointed at a
-surface it cannot see. Where the origin genuinely differs the caller supplies
-it (`body_source`): the CLI says "stdin", the server says "the `body`
-argument".
+Messages here name **arguments, never CLI flags** — the package-wide rule, now
+stated in `errors.py`. This module is where it was found broken (#18) and it
+owns the one seam for the case the rule cannot cover: the body's origin
+genuinely differs per caller, so the caller supplies it (`body_source`) rather
+than the raise site guessing. The CLI says "stdin" or `--file draft.md`, the
+server says "the `body` argument", and both are right for their reader.
 """
 
 import logging
