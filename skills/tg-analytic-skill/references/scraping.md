@@ -44,21 +44,11 @@ uv run <skill_dir>/scripts/tg_scrape.py scrape --channel @name --latest 100 --no
 uv run <skill_dir>/scripts/tg_scrape.py scrape --channel @name --offset-id 1234
 ```
 
-Zero posts scraped is a normal result for an incremental run whose window holds
-nothing new — report it as "no new posts since #N", not as a failure. A wrong
-handle cannot land here: it exits 1 with `Cannot resolve @name` before any DB
-is created.
+Zero posts scraped is a normal result for an incremental run whose window holds nothing new — report it as "no new posts since #N", not as a failure. A wrong handle cannot land here: it exits 1 with `Cannot resolve @name` before any DB is created.
 
-On very large channels Telethon may surface `FloodWaitError` mid-run; the
-script logs it and continues per item where it can. If a run aborts, resume
-forward with `--offset-id <last-seen-id>` instead of restarting.
+On very large channels Telethon may surface `FloodWaitError` mid-run; the script logs it and continues per item where it can. If a run aborts, resume forward with `--offset-id <last-seen-id>` instead of restarting.
 
-An album (grouped media) is **one** post no matter how the window falls: when
-the selection cuts through one, the script re-fetches the missing members by id
-(`album … was cut by the window: pulled in …`) so the caption-carrying head
-still owns the whole album. Any leftover extra post rows from before that fix
-are removed on open, logged as `removed N phantom album post row(s)` — expected
-maintenance output, not an error.
+An album (grouped media) is **one** post no matter how the window falls: when the selection cuts through one, the script re-fetches the missing members by id (`album … was cut by the window: pulled in …`) so the caption-carrying head still owns the whole album. Any leftover extra post rows from before that fix are removed on open, logged as `removed N phantom album post row(s)` — expected maintenance output, not an error.
 
 ## `fetch` — refresh specific posts
 
