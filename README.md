@@ -1,4 +1,4 @@
-# tg-analytic-skill
+# slop-writer
 
 A [Claude Code](https://claude.com/claude-code) skill that analyzes a Telegram
 channel:
@@ -18,13 +18,18 @@ SQLite DB (one file per channel).
 > [**@fastnewsdev**](https://t.me/fastnewsdev). It's shared here in case the
 > patterns are useful to someone else running a Telegram channel
 
+> **Renamed from `tg-analytic-skill`.** The analytics are being repackaged as a
+> PyPI distribution driving an MCP server, and the new name leaves room for
+> media beyond Telegram. Nothing has moved yet — the skill below works exactly
+> as before, and links to the old repository path still redirect.
+
 ## Install
 
 From any project where you want the skill available to Claude Code, use the
 [`skills`](https://dev.to/baltz/sharing-skills-with-npx-2nbc) CLI:
 
 ```bash
-npx skills@latest add Lancetnik/tg-analytic-skill
+npx skills@latest add Lancetnik/slop-writer
 ```
 
 ## First-run setup
