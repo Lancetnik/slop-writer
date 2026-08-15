@@ -1,0 +1,32 @@
+[project]
+name = "slop-writer"
+version = "0.0.1"
+description = "Telegram channel analytics: the library behind the slop-writer skill, and later its MCP server."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Lancetnik", email = "nikita@pastukhov-dev.ru" }]
+keywords = ["telegram", "analytics", "telethon", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Communications :: Chat",
+]
+
+# Deliberately empty: this release contains no code, so it depends on nothing.
+# The real set (telethon, python-dotenv, typer, mistune) arrives in 0.1.0 with
+# the modules that need it.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Lancetnik/slop-writer"
+Issues = "https://github.com/Lancetnik/slop-writer/issues"
+
+# No [project.scripts]: the dev CLIs stay PEP-723 scripts under `uv run`. The
+# `slop-writer` command arrives with `install` / `init` / `serve`.
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
