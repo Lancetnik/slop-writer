@@ -523,6 +523,12 @@ def summarize_install(result) -> str:
     skill_rel = result.skill_target.relative_to(root)
     out.append(f"  {skill_rel} — skill, "
                f"{'replaced' if result.skill_existed else 'installed'}")
+    if result.legacy_skill_removed is not None:
+        # Deleting something the user did not ask us to delete is exactly the
+        # kind of thing that must not be silent (#34).
+        out.append(f"  {result.legacy_skill_removed.relative_to(root)} — "
+                   f"removed: this skill's pre-0.4 directory, which would "
+                   f"otherwise load alongside the current one")
     if result.permissions_seeded:
         out.append(f"  {result.settings.relative_to(root)} — permissions: "
                    f"reads allowed, publishing behind a prompt")
@@ -536,11 +542,21 @@ def summarize_install(result) -> str:
         out.append("  publishing tools this version expects under `ask`: "
                    + ", ".join(result.ask_tools))
 
-    if result.skills_lock_conflict:
+    if result.skills_lock_names:
+        from .install import LEGACY_SKILL_DIR_NAME
+
         out.append("")
-        out.append("! skills-lock.json also tracks this skill. Both channels "
-                   "serve the same directory, so the lock's hash will no "
-                   "longer match — expected, not a failure.")
+        out.append("! skills-lock.json tracks "
+                   + ", ".join(result.skills_lock_names)
+                   + ". Both channels serve the same directory, so the lock's "
+                     "hash will no longer match — expected, not a failure.")
+        if LEGACY_SKILL_DIR_NAME in result.skills_lock_names:
+            # We do not write another tool's state file, so this one is the
+            # user's to clear — but it has to be said, or the entry silently
+            # outlives the directory this run just deleted.
+            out.append(f"  Its `{LEGACY_SKILL_DIR_NAME}` entry is the pre-0.4 "
+                       f"name and now points at nothing. Remove it yourself — "
+                       f"the lock belongs to npx, not to this command.")
 
     if not result.on_path:
         out.append("")

@@ -14,6 +14,7 @@ from slop_writer.errors import SlopWriterError
 from slop_writer.install import (
     BLOCK_END,
     BLOCK_START,
+    LEGACY_SKILL_DIR_NAME,
     PUBLISH_TOOLS,
     SERVER_NAME,
     install_project,
@@ -21,6 +22,7 @@ from slop_writer.install import (
     skill_source,
     uninstall_project,
 )
+from slop_writer.render import summarize_install
 
 
 def read(path):
@@ -150,6 +152,78 @@ def test_install_writes_the_skill_and_replaces_it_next_time(tmp_path):
     assert again.skill_existed
     assert (skill / "SKILL.md").read_text() != "mine now"
     assert not (skill / "stray.md").exists()
+
+
+def plant_legacy_skill(root):
+    """A pre-0.4 project: the old `npx skills add` directory, still loadable."""
+    legacy = root / ".claude" / "skills" / LEGACY_SKILL_DIR_NAME
+    (legacy / "references").mkdir(parents=True)
+    (legacy / "SKILL.md").write_text("---\nname: tg-analytic-skill\n---\n")
+    (legacy / "references" / "scraping.md").write_text("tg_scrape.py --latest")
+    return legacy
+
+
+def test_install_removes_the_pre_04_skill_directory(tmp_path):
+    """#34: the rename left the old directory loadable, so a pre-0.4 machine
+    carries two model-invocable skills claiming the same job — and since #30
+    the stale one advertises CLIs that are documented nowhere. `install`
+    deletes it, because it is our artifact under our own former name."""
+    legacy = plant_legacy_skill(tmp_path)
+
+    result = install_project(tmp_path)
+
+    assert not legacy.exists()
+    assert result.legacy_skill_removed == legacy
+    assert (tmp_path / ".claude" / "skills" / "slop-writer" / "SKILL.md").is_file()
+
+
+def test_removing_the_old_skill_is_never_silent(tmp_path):
+    """Deleting something the user did not ask us to delete is exactly what
+    #19's "say what you wrote" rule exists for."""
+    plant_legacy_skill(tmp_path)
+
+    printed = summarize_install(install_project(tmp_path))
+
+    assert LEGACY_SKILL_DIR_NAME in printed
+    assert "removed" in printed
+
+
+def test_a_project_without_the_old_skill_reports_no_removal(tmp_path):
+    """The common case says nothing — an upgrade note that fires on every
+    install stops being read."""
+    result = install_project(tmp_path)
+
+    assert result.legacy_skill_removed is None
+    assert LEGACY_SKILL_DIR_NAME not in summarize_install(result)
+
+
+def test_the_old_name_in_skills_lock_is_reported_and_not_edited(tmp_path):
+    """#34's second half. The lock is npx's state file with its own hashing
+    scheme, so we name the stale entry and leave it — an entry that outlives
+    the directory we just deleted is the user's to clear."""
+    lock = tmp_path / "skills-lock.json"
+    before = json.dumps({"skills": {LEGACY_SKILL_DIR_NAME: {"computedHash": "x"}}})
+    lock.write_text(before)
+    plant_legacy_skill(tmp_path)
+
+    result = install_project(tmp_path)
+
+    assert LEGACY_SKILL_DIR_NAME in result.skills_lock_names
+    assert lock.read_text() == before, "the lock belongs to npx, not to install"
+    assert "Remove it yourself" in summarize_install(result)
+
+
+def test_a_lock_tracking_only_the_current_name_is_the_expected_overlap(tmp_path):
+    """Both channels serve the same directory on purpose (#21), so this one is
+    a named consequence rather than the upgrade problem #34 is about."""
+    (tmp_path / "skills-lock.json").write_text(
+        json.dumps({"skills": {"slop-writer": {"computedHash": "x"}}})
+    )
+
+    printed = summarize_install(install_project(tmp_path))
+
+    assert "expected, not a failure" in printed
+    assert "Remove it yourself" not in printed
 
 
 def test_the_shipped_skill_is_the_one_in_this_checkout():

@@ -94,6 +94,16 @@ disk.
   - `install.py` — `install` / `uninstall`: the **agent wiring** (#19). Knows
     about MCP clients and nothing about Telegram — no secrets, no TTY, no
     network. Copies `server.permission_rules()` rather than restating it.
+    It **deletes** `.claude/skills/tg-analytic-skill/`
+    (`LEGACY_SKILL_DIR_NAME`) after copying the current skill — #34's call, on
+    the grounds that #19's "`.claude/` is the human's" rule guards config they
+    authored, and this is our own directory under our former name. Two
+    model-invocable skills claiming one job is not cosmetic: since #30 the
+    stale one advertises CLIs documented nowhere. The delete runs *after* the
+    copy, so a missing skill source cannot leave a machine with no skill at
+    all, and it is always printed. `skills-lock.json` is the opposite call —
+    `_skills_lock_names` reports both our names and **never edits**, because
+    the lock is npx's state file with its own hashing scheme.
   - `init.py` — `init`: the **Telegram state** (#19). Knows about credentials
     and sessions and nothing about MCP clients. No `input()` — prompting lives
     in `cli.py`, which owns the TTY, so these stay testable without one.
@@ -221,7 +231,7 @@ The shipped console script.
 
 | Command | Does | Needs |
 | --- | --- | --- |
-| `install` | wire this project's Claude Code config: the path-free `.mcp.json` entry, the permission block, the skill into `.claude/skills/slop-writer/`, the `CLAUDE.md` address block | nothing — no Telegram, no network |
+| `install` | wire this project's Claude Code config: the path-free `.mcp.json` entry, the permission block, the skill into `.claude/skills/slop-writer/`, the `CLAUDE.md` address block; **deletes a pre-0.4 `.claude/skills/tg-analytic-skill/`** (#34) | nothing — no Telegram, no network |
 | `init` | Telegram credentials → `.tg-analytic/.env`, gitignore, and the TTY login | a real terminal (the user runs it) |
 | `uninstall` | remove exactly what `install` wrote; **never** `.tg-analytic/` | — |
 | `serve --mcp` | run the MCP server over stdio; `--project PATH` overrides the cwd-derived project root | launched by the MCP client, not by hand |

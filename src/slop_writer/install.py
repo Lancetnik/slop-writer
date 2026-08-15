@@ -36,6 +36,15 @@ from .server import SERVER_NAME, permission_rules
 #: must land on the same path or a project ends up with two copies (#21).
 SKILL_DIR_NAME = "slop-writer"
 
+#: What this skill was called before 0.4. A project installed from the old
+#: `npx skills add` still carries it, and nothing renamed it in place — so a
+#: pre-0.4 machine loads **two** model-invocable skills whose descriptions
+#: disagree, the stale one advertising CLIs that #30 stopped documenting.
+#: `install` deletes it (#34): #19's "it is the human's file" rule guards
+#: config they authored, and this is a directory we wrote under our own
+#: former name.
+LEGACY_SKILL_DIR_NAME = "tg-analytic-skill"
+
 MCP_CONFIG_NAME = ".mcp.json"
 SETTINGS_PATH = (".claude", "settings.json")
 SKILLS_PARENT = (".claude", "skills")
@@ -168,8 +177,11 @@ class InstallResult:
     permissions_seeded: bool
     memory_block_written: bool
     skill_existed: bool
-    skills_lock_conflict: bool
+    #: Which of our names `skills-lock.json` tracks — reported, never edited.
+    skills_lock_names: tuple[str, ...]
     on_path: bool
+    #: The pre-0.4 directory this run deleted, or None if there was none (#34).
+    legacy_skill_removed: Path | None = None
     ask_tools: tuple[str, ...] = PUBLISH_TOOLS
 
 
@@ -274,18 +286,52 @@ def _copy_skill(target: Path) -> None:
     shutil.copytree(source, target)
 
 
-def _skills_lock_mentions_us(project_root: Path) -> bool:
-    """Whether the `npx skills add` channel believes it owns this directory.
+def _remove_legacy_skill(project_root: Path) -> Path | None:
+    """Delete the pre-0.4 skill directory, returning it if there was one.
 
-    Both channels serve the same directory from the same repository (#21), so
-    the overlap is expected and drift is an accepted cost — but the lock's
+    Two skills in one listing is not a cosmetic problem: both are
+    model-invocable, both claim the same job, and the stale one describes an
+    execution surface that no longer exists — so the agent picks between them
+    with no way to tell which is current.
+
+    Deleting rather than warning is #34's call. The counter-argument was #19's
+    rule that `.claude/` belongs to the human, but that rule is about
+    `settings.json` — config they wrote. This directory is our own artifact
+    under our own former name, and `install` already replaces its successor
+    wholesale for exactly that reason.
+
+    Nothing here touches `skills-lock.json`: see `_skills_lock_names`."""
+    legacy = project_root / Path(*SKILLS_PARENT) / LEGACY_SKILL_DIR_NAME
+    if not legacy.is_dir():
+        return None
+    shutil.rmtree(legacy)
+    return legacy
+
+
+def _skills_lock_names(project_root: Path) -> tuple[str, ...]:
+    """Which of our directory names the `npx skills add` channel tracks.
+
+    Both channels serve the current directory from the same repository (#21),
+    so that overlap is expected and drift is an accepted cost — but the lock's
     `computedHash` stops matching the moment `install` overwrites, and that
-    should surface as a named consequence, not as a bug report."""
+    should surface as a named consequence rather than as a bug report. An
+    entry under the *old* name is the other half, and went undetected until
+    #34: it outlives the directory `_remove_legacy_skill` just deleted.
+
+    **Reported, never edited.** The lock is another tool's state file with its
+    own hashing scheme; rewriting it means fighting npx for ownership of a
+    format we do not control, and a wrong edit corrupts a file we did not
+    write. Naming it is the honest boundary."""
+    found = []
     for name in ("skills-lock.json", ".claude/skills-lock.json"):
         path = project_root / name
-        if path.is_file() and SKILL_DIR_NAME in path.read_text(encoding="utf-8"):
-            return True
-    return False
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for skill in (SKILL_DIR_NAME, LEGACY_SKILL_DIR_NAME):
+            if skill in text and skill not in found:
+                found.append(skill)
+    return tuple(found)
 
 
 def install_project(project_root: Path) -> InstallResult:
@@ -330,6 +376,9 @@ def install_project(project_root: Path) -> InstallResult:
     skill_target = project_root / Path(*SKILLS_PARENT) / SKILL_DIR_NAME
     skill_existed = skill_target.exists()
     _copy_skill(skill_target)
+    # After the copy, so a failure to find our own skill source leaves the old
+    # directory in place rather than removing the only skill on the machine.
+    legacy_skill_removed = _remove_legacy_skill(project_root)
 
     return InstallResult(
         project_root=project_root,
@@ -342,7 +391,8 @@ def install_project(project_root: Path) -> InstallResult:
         permissions_seeded=first_install,
         memory_block_written=first_install,
         skill_existed=skill_existed,
-        skills_lock_conflict=_skills_lock_mentions_us(project_root),
+        legacy_skill_removed=legacy_skill_removed,
+        skills_lock_names=_skills_lock_names(project_root),
         # The one self-check worth running: a `uv tool install` that missed
         # PATH surfaces inside the client as an undiagnosable "server didn't
         # start". No trial launch — it would prove nothing about how the

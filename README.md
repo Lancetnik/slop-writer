@@ -34,9 +34,12 @@ slop-writer install     # wires Claude Code: MCP server, permissions, the skill
 slop-writer init        # Telegram credentials and the one-time login
 ```
 
-`install` writes three things and nothing else: the `slop-writer` entry in
-`.mcp.json`, a permission block in `.claude/settings.json` (reads allowed,
-publishing behind a prompt), and the skill into `.claude/skills/slop-writer/`.
+`install` writes three things: the `slop-writer` entry in `.mcp.json`, a
+permission block in `.claude/settings.json` (reads allowed, publishing behind a
+prompt), and the skill into `.claude/skills/slop-writer/`. It deletes one — a
+`.claude/skills/tg-analytic-skill/` left by a pre-0.4 install, which would
+otherwise load alongside the current skill and describe a surface that no
+longer exists. Everything it writes or removes is printed.
 The `.mcp.json` entry holds no machine-specific path, so it is safe to commit —
 a teammate clones, runs `slop-writer init`, and is done. **Restart your MCP
 client afterwards**: `.mcp.json` is read at session start only.
