@@ -103,6 +103,19 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     -names comparison, and the write tools' failures up to (never past) the
     missing session. It is the one place the MCP contract is checked without
     a client.
+  - `test_server_stdio.py` is the other half: it launches `serve --mcp` as a
+    **subprocess** (cwd = a `tmp_path` project root, no `--project`) and
+    speaks MCP to it, because `isError`, `structuredContent`, `_meta` and the
+    handshake version are produced on the way out and no in-process call runs
+    that code. One session per module, on a loop of its own thread — the suite
+    still has no async plugin. A completed handshake *is* the assertion that
+    `assert_text_only` passed inside the real entrypoint.
+  - `test_errors.py` guards the closed vocabulary two ways: at construction,
+    and **statically over the package's own source** (`ast`, every `code=`
+    literal). The static half exists because most raise sites need a Telegram
+    session to reach, so `__init__`'s check otherwise fires only in a live
+    run. It also records the two codes no raise site names yet
+    (`MESSAGE_TOO_LONG`, `NOT_A_MEMBER`) so a third is a decision.
   - Nothing in the suite touches a Telegram session, `.tg-analytic/`, or the
     network. Live runs stay the acceptance step; they are no longer the only
     one.

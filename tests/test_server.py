@@ -115,6 +115,31 @@ def test_no_tool_carries_an_output_schema(server, tools):
     run(assert_text_only(server))
 
 
+def test_the_startup_guard_refuses_a_tool_that_leaked_structure(tmp_path):
+    """The other half of the guard: that it *fails*.
+
+    The test above proves the property holds today; this proves the check can
+    still catch it being broken. `mcp.tool()` is the registration path someone
+    reaches for when they add a tool without noticing `_tool` — and a bare
+    `-> str` is enough, because the SDK wraps a scalar return in
+    `{"result": …}` and calls that an output schema."""
+    mcp = build_server(tmp_path)
+
+    @mcp.tool()
+    async def leaky() -> str:  # pragma: no cover - never called, only listed
+        return "x"
+
+    with pytest.raises(RuntimeError, match="structured output leaked"):
+        run(assert_text_only(mcp))
+
+
+def test_the_server_ships_no_instructions(server):
+    """#21: `instructions` are always in context, so domain knowledge lives in
+    the skill instead. Prose added here is paid for on every request of every
+    session, which is the cost nobody decided to take on."""
+    assert not server.instructions
+
+
 def test_only_run_query_is_always_loaded(tools):
     """Every other tool is deferred behind ToolSearch (#15). `alwaysLoad` on a
     second tool is a per-turn context cost nobody decided to pay."""
@@ -415,6 +440,37 @@ def test_the_selection_union_reaches_the_model_nested(tools):
     assert schema.get("$defs", {}).keys() >= {"LatestSelect", "WindowSelect"}
     for arm in ("LatestSelect", "WindowSelect"):
         assert schema["$defs"][arm]["additionalProperties"] is False
+
+
+def test_the_union_crosses_as_a_combinator_with_its_tag(tools):
+    """The shape #23 measured, asserted rather than assumed: `oneOf` over two
+    `$ref` arms plus a `discriminator` naming `mode`. A model that has to guess
+    which arm it is filling is the failure this buys off — and the arms are
+    told apart by nothing else, since `mode` is the only field they share."""
+    select = tools["scrape_posts"].inputSchema["properties"]["select"]
+    assert select["discriminator"]["propertyName"] == "mode"
+    assert [arm["$ref"].rsplit("/", 1)[-1] for arm in select["oneOf"]] == [
+        "LatestSelect", "WindowSelect"
+    ]
+
+
+def test_the_window_arm_must_say_so_and_the_default_arm_need_not(tools):
+    """`mode` is required on `WindowSelect` and defaulted on `LatestSelect`, so
+    an omitted tag reads as `latest` — which is also what an omitted `select`
+    means. Two ways to say the common thing, one way to say the rare one."""
+    defs = tools["scrape_posts"].inputSchema["$defs"]
+    assert defs["WindowSelect"]["required"] == ["mode"]
+    assert "required" not in defs["LatestSelect"]
+
+
+def test_selecting_a_window_is_optional_on_every_tool_that_takes_one(tools):
+    """`select` absent must stay legal: `DEFAULT_SELECT` is the newest-first
+    bias the CLI had, and requiring the argument would push the model into
+    writing a window by hand."""
+    for name, tool in tools.items():
+        schema = tool.inputSchema
+        if "select" in schema.get("properties", {}):
+            assert "select" not in schema.get("required", []), name
 
 
 def test_the_rendered_row_cap_is_bounded_in_the_schema(tools):
