@@ -22,18 +22,16 @@ import pytest
 import slop_writer
 from slop_writer.errors import ERROR_CODES, SlopWriterError, UsageError
 
-#: Vocabulary entries that no raise site names yet — see
-#: `test_every_code_is_reachable_from_some_raise_site`. Listed rather than
-#: tolerated so that adding a third is a decision someone makes on purpose.
-UNREACHED_CODES = {
-    # Telegram enforces the caption/body caps, not this package (adr/0003), so
-    # a too-long body comes back from Telethon and reaches the model as
-    # INTERNAL. The code is the shape of the fix, not a description of today.
-    "MESSAGE_TOO_LONG",
-    # The group scans do require membership, but the failure currently arrives
-    # as whatever Telethon raised rather than as this code.
-    "NOT_A_MEMBER",
-}
+#: Vocabulary entries that no raise site names — see
+#: `test_every_code_is_reachable_from_some_raise_site`.
+#:
+#: Empty as of #35, which closed the two that were here: `MESSAGE_TOO_LONG` now
+#: rides `publish._too_long`, and `NOT_A_MEMBER` splits Telegram's "you may not
+#: see this peer" out of `CANNOT_RESOLVE`. The set survives its own emptiness on
+#: purpose — it is where a *deliberately* unreachable code would be recorded
+#: with its reason, so re-adding one is an edit somebody has to justify rather
+#: than a green suite quietly widening the contract.
+UNREACHED_CODES: set[str] = set()
 
 
 def _package_sources() -> list[Path]:
@@ -135,8 +133,8 @@ def test_no_raise_site_names_a_code_outside_the_vocabulary():
 def test_every_code_is_reachable_from_some_raise_site():
     """A code nothing raises is a promise to the model that never comes true:
     it appears in the contract's closed set, and the model may branch on a
-    value it will never receive. The two exceptions are recorded above with
-    the reason each is still aspirational."""
+    value it will never receive. `UNREACHED_CODES` is the ledger of exceptions
+    and is empty — every code in the vocabulary is named somewhere."""
     unreached = set(ERROR_CODES) - set(_codes_named_in_source())
     assert unreached == UNREACHED_CODES
 

@@ -123,19 +123,32 @@ async def resolve_peer(client: TelegramClient, channel: str):
 
     Handles resolving to a person are rejected: every command targets a
     channel or group, and reading (or posting into) someone's private chat
-    is out of scope by design."""
+    is out of scope by design.
+
+    Two failures, two codes. `ChannelPrivateError` is Telegram saying the peer
+    is real and this account may not see it — a different situation from a
+    handle that names nothing, and a different fix: join it, versus correct it.
+    They used to share `CANNOT_RESOLVE`, which told an agent holding a perfectly
+    good handle to go looking for a typo (#35)."""
     try:
         entity = await client.get_entity(channel)
+    except ChannelPrivateError as e:
+        raise SlopWriterError(
+            f"Cannot access {channel}: {e}",
+            hint="The handle is fine — this account is not in that channel or "
+            "group (or was removed from it). Join it, or ask its owner for "
+            "access, then retry.",
+            code="NOT_A_MEMBER",
+        ) from None
     except (
         ValueError,
         UsernameInvalidError,
         UsernameNotOccupiedError,
-        ChannelPrivateError,
     ) as e:
         raise SlopWriterError(
             f"Cannot resolve {channel}: {e}",
-            hint="Check the handle for typos, and that this account can see "
-            "the channel (join it, or ask for access).",
+            hint="Check the handle for typos. A private group also resolves "
+            "only for an account that has already seen it.",
             code="CANNOT_RESOLVE",
         ) from None
     if isinstance(entity, User):

@@ -154,8 +154,11 @@ disk.
     and **statically over the package's own source** (`ast`, every `code=`
     literal). The static half exists because most raise sites need a Telegram
     session to reach, so `__init__`'s check otherwise fires only in a live
-    run. It also records the two codes no raise site names yet
-    (`MESSAGE_TOO_LONG`, `NOT_A_MEMBER`) so a third is a decision.
+    run. Its `UNREACHED_CODES` ledger is **empty** as of #35 — every code in
+    the vocabulary is named by some raise site — and it survives its emptiness
+    so that re-adding an unreachable code is an edit somebody justifies.
+    `test_tg.py` is the behavioural half for `resolve_peer`'s two codes: the
+    static scan proves a `code=` literal exists, not that the line runs.
   - Nothing in the suite touches a Telegram session, `.tg-analytic/`, or the
     network. Live runs stay the acceptance step; they are no longer the only
     one.
@@ -341,8 +344,24 @@ the call result. `--caption-above` rides an `invert_media` monkey patch
   `src/slop_writer/` prints an error or exits: it raises `SlopWriterError`
   (`UsageError` for exit 2) and the CLI turns that into stderr + an exit code.
   This is what lets the MCP server call the same function and build a JSON
-  payload instead. `code` is the #15 vocabulary, and is `None` at the raise
-  sites that vocabulary doesn't name yet.
+  payload instead. `code` is the #15 vocabulary, enforced at construction, and
+  every entry in it has a raise site (#35 closed the last two). It stays
+  `None`-able only for the boundary, which labels an unanticipated exception
+  `INTERNAL`.
+- **A refusal is not an absence.** `CANNOT_RESOLVE` means the handle names
+  nothing; `NOT_A_MEMBER` means Telegram confirmed the peer and refused this
+  account. They share a Telethon call and nothing else — one is fixed by
+  correcting the handle, the other by joining — so `resolve_peer` splits
+  `ChannelPrivateError` out, and the group scan classifies the three calls it
+  makes past `resolve_peer` (the linked group's entity, its `full_chat`, and
+  the history read, which can refuse after the other two succeeded). In the
+  linked-group branch a bare `ValueError` counts as membership too: the group's
+  id came from Telegram one call earlier, so it provably exists.
+- **`MESSAGE_TOO_LONG` comes from the network, by design.** The cap depends on
+  the account (1024 UTF-16 units for a caption, 2048 with Premium, 4096 for a
+  text post), so `publish.py` does not measure the body — it translates
+  Telethon's `MessageTooLongError` / `MediaCaptionTooLongError` in `_too_long`,
+  which is therefore the only place the code can be named.
 - **The domain uses a client, the entrypoint owns it.** The scrape and scan
   paths come in twins: `X_with_client(client, …)` does the work,
   `X(…, session_file)` is the same call with one `channel_session` wrapped

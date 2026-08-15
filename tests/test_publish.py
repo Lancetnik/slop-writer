@@ -15,7 +15,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from telethon.errors import MediaCaptionTooLongError, MessageTooLongError
 
+from slop_writer import publish
 from slop_writer.errors import SlopWriterError, UsageError
 from slop_writer.publish import (
     MAX_ALBUM,
@@ -25,6 +27,9 @@ from slop_writer.publish import (
     prepare_schedule,
     render_body,
 )
+
+from .conftest import run
+from .factories import FakeClient, fake_session
 
 
 def iso_in(delta: timedelta, tz=UTC) -> str:
@@ -278,3 +283,82 @@ def test_caption_above_survives_onto_the_draft(images):
         "caption", iso_in(SOON), photo_paths=[images("a.jpg")], caption_above=True
     )
     assert draft.caption_above is True
+
+
+# --------------------------------------------------------------------------
+# The one failure that arrives from the network
+# --------------------------------------------------------------------------
+#
+# Everything above runs before a session exists. Length does not: the cap
+# depends on the account (1024 UTF-16 units for a caption, 2048 with Premium,
+# 4096 for a text post), so this package refuses to guess it and lets Telegram
+# answer. That makes `_too_long` the only place `MESSAGE_TOO_LONG` can be named
+# — and, until #35, the place that named nothing, so a body two characters over
+# the cap reached the model as INTERNAL: "the server's stderr has the
+# traceback", which it cannot act on.
+
+
+def schedule(client, draft, monkeypatch):
+    """Drive `schedule_post` over a fake client — the send is the only part of
+    the write surface that needs one."""
+    monkeypatch.setattr(publish, "channel_session", fake_session(client, entity=1))
+    return run(publish.schedule_post("@chan", draft, "session"))
+
+
+@pytest.mark.parametrize(
+    "error, media, cap",
+    [
+        (MessageTooLongError(None), False, "4096"),
+        (MediaCaptionTooLongError(None), True, "1024"),
+    ],
+    ids=["text-post", "photo-caption"],
+)
+def test_a_body_telegram_refuses_for_length_says_so(
+    error, media, cap, images, monkeypatch
+):
+    draft = prepare_schedule(
+        "over the cap",
+        iso_in(SOON),
+        photo_paths=[images("a.jpg")] if media else None,
+    )
+
+    with pytest.raises(SlopWriterError) as exc:
+        schedule(FakeClient(send_error=error), draft, monkeypatch)
+
+    assert exc.value.code == "MESSAGE_TOO_LONG"
+    assert cap in exc.value.message
+
+
+def test_the_length_report_counts_utf16_units_not_characters(monkeypatch):
+    """The unit is the whole point: an emoji is one character and two UTF-16
+    units, so a body reported in characters would understate itself against a
+    limit Telegram counts the other way."""
+    draft = prepare_schedule("🙂🙂", iso_in(SOON))
+
+    with pytest.raises(SlopWriterError) as exc:
+        schedule(FakeClient(send_error=MessageTooLongError(None)), draft, monkeypatch)
+
+    assert "4 UTF-16 units" in exc.value.message
+
+
+def test_nothing_was_queued_is_stated_rather_than_left_to_inference(monkeypatch):
+    """A failed send leaves the queue untouched, and the caller cannot see the
+    queue. Saying so is what stops a retry from being read as a duplicate."""
+    draft = prepare_schedule("body", iso_in(SOON))
+
+    with pytest.raises(SlopWriterError) as exc:
+        schedule(FakeClient(send_error=MessageTooLongError(None)), draft, monkeypatch)
+
+    assert "nothing was queued or changed" in exc.value.message
+
+
+def test_a_send_that_succeeds_reports_the_scheduled_post(monkeypatch):
+    """The other side of the same seam — without it the tests above would pass
+    just as well against a send that always raised."""
+    draft = prepare_schedule("body", iso_in(SOON))
+
+    result = schedule(FakeClient(), draft, monkeypatch)
+
+    assert result.action == "Scheduled"
+    assert result.item["text"] == "body"
+    assert result.item["requested"] == draft.when.isoformat()

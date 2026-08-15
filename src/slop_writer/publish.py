@@ -198,7 +198,12 @@ def _too_long(text: str, *, media: bool) -> SlopWriterError:
     Length is deliberately NOT checked client-side: the cap depends on the
     account (photo captions: 1024 UTF-16 units, 2048 with Premium; text
     posts: 4096) and Telegram is the authority — a hardcoded check would
-    wrongly block Premium accounts. Rejection leaves nothing queued/changed."""
+    wrongly block Premium accounts. Rejection leaves nothing queued/changed.
+
+    That division is also why this is the only place `MESSAGE_TOO_LONG` can be
+    named: the verdict arrives over the network, so the code attaches where
+    Telethon's error is translated rather than at a length check that would
+    have to guess the cap it is enforcing."""
     n = _utf16_len(text)
     if media:
         cap = "photo-caption cap (1024 UTF-16 units, 2048 with Telegram Premium)"
@@ -206,7 +211,11 @@ def _too_long(text: str, *, media: bool) -> SlopWriterError:
         cap = "text-post cap (4096 UTF-16 units)"
     return SlopWriterError(
         f"Telegram rejected the body: {n} UTF-16 units is over this account's "
-        f"{cap}. Shorten the body — nothing was queued or changed."
+        f"{cap}. Shorten the body — nothing was queued or changed.",
+        hint="Shorten the body and retry. A photo caption is capped far below "
+        "a text post, so sending the same body without photos also raises the "
+        "ceiling.",
+        code="MESSAGE_TOO_LONG",
     )
 
 

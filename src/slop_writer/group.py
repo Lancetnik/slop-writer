@@ -22,6 +22,7 @@ from pathlib import Path
 from sqlite3 import Connection
 
 from telethon import TelegramClient
+from telethon.errors import ChannelPrivateError
 from telethon.tl.functions.channels import GetAdminLogRequest, GetFullChannelRequest
 from telethon.tl.types import (
     ChannelAdminLogEventsFilter,
@@ -311,6 +312,23 @@ class GroupScanResult:
     threads: list[dict]
 
 
+def not_a_member(label: str, cause: Exception) -> SlopWriterError:
+    """The scan's membership failure, reported as one code (#35).
+
+    Membership is the group scans' entry requirement — `resolve_peer` names
+    `NOT_A_MEMBER` for the handles it resolves, and this covers the calls the
+    scan makes past it, where Telegram refuses the group rather than the
+    handle. The remedy is the same everywhere it fires, which is why it is one
+    code and not three."""
+    return SlopWriterError(
+        f"Cannot read {label}: {cause}",
+        hint="A group scan needs this account to be a member of the group — "
+        "membership, not admin rights. Join it (a channel's discussion group "
+        "is joinable from the comments under any post), then retry.",
+        code="NOT_A_MEMBER",
+    )
+
+
 async def resolve_group_target(
     client: TelegramClient, channel: str | None, group: str | None
 ) -> GroupTarget:
@@ -331,13 +349,24 @@ async def resolve_group_target(
                 "standalone group instead.",
                 code="NO_LINKED_GROUP",
             )
-        entity = await client.get_entity(PeerChannel(linked))
+        # `linked` came from Telegram a line ago, so the group provably exists:
+        # a failure to reach it here is about this account, never about the
+        # handle. That includes the bare ValueError Telethon raises when the
+        # group is absent from the session's entity cache — an account in the
+        # group has seen it.
+        try:
+            entity = await client.get_entity(PeerChannel(linked))
+        except (ValueError, ChannelPrivateError) as e:
+            raise not_a_member(f"{channel}'s discussion group", e) from None
         channel_id = ch_entity.id
     else:
         entity = await resolve_peer(client, group)
         channel_id = None
 
-    g_full = await client(GetFullChannelRequest(entity))
+    try:
+        g_full = await client(GetFullChannelRequest(entity))
+    except ChannelPrivateError as e:
+        raise not_a_member(channel or group or "the group", e) from None
     if group and g_full.full_chat.linked_chat_id:
         log.warning(
             "%s is the discussion group of a channel (id %d) - to get "
@@ -574,16 +603,23 @@ async def scan_group_with_client(
             "authenticated, scanning group %s (%s)",
             target.title or target.link, handle,
         )
-        raw = [
-            m
-            async for m in client.iter_messages(
-                target.entity,
-                limit=iter_limit,
-                reverse=reverse,
-                offset_id=iter_offset_id,
-                offset_date=iter_offset_date,
-            )
-        ]
+        # Resolving the group does not prove this account may read it: an
+        # entity Telegram handed over with the channel's `full_chat`, or one
+        # left in the session cache by an earlier membership, resolves fine and
+        # then refuses the history. So the read is classified too.
+        try:
+            raw = [
+                m
+                async for m in client.iter_messages(
+                    target.entity,
+                    limit=iter_limit,
+                    reverse=reverse,
+                    offset_id=iter_offset_id,
+                    offset_date=iter_offset_date,
+                )
+            ]
+        except ChannelPrivateError as e:
+            raise not_a_member(target.title or handle or "the group", e) from None
         log.info("fetched %d group messages", len(raw))
 
         service = [m for m in raw if isinstance(m, MessageService)]
