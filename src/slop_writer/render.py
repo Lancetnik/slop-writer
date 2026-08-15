@@ -1,9 +1,15 @@
 """Markdown renderers: plain summary dicts in, LLM-oriented stdout out.
 
-Pure presentation — no Telegram, no SQLite, no Telethon types. The dict
-shapes tg_scrape.py builds are the interface; anything here is testable by
-fabricating those dicts. Every renderer prints a Markdown block designed to
-be pasted to the user as-is (see SKILL.md "Reporting back to the user").
+Pure presentation — no Telegram, no SQLite, no Telethon types. The dicts the
+domain modules return (`ScrapeResult`, `GroupScanResult`, ...) are the
+interface; anything here is exercisable by fabricating them. Every renderer
+prints a Markdown block designed to be pasted to the user as-is (see SKILL.md
+"Reporting back to the user").
+
+Printing, rather than returning a string, is deliberate: rendering is the
+entrypoint's job, and today's entrypoint is a CLI whose output *is* stdout.
+A caller that needs the text instead of the stream is the MCP server's
+problem to state, not this module's to guess.
 """
 
 from collections import Counter
@@ -46,6 +52,41 @@ def _rel_when(iso: str | None, now: datetime) -> str:
     else:
         mag = f"{int(secs // 86400)}d"
     return f"overdue {mag}" if overdue else f"in ~{mag}"
+
+
+def _query_cell(value, truncate: bool = True) -> str:
+    if value is None:
+        return ""
+    text = str(value).replace("|", "\\|").replace("\n", " ")
+    if truncate and len(text) > 200:
+        text = text[:197] + "..."
+    return text
+
+
+def summarize_query(
+    columns: list[str],
+    rows: list[tuple],
+    limit: int = 100,
+    truncate: bool = True,
+) -> None:
+    """Print a query result as a Markdown table.
+
+    `limit` caps the printed rows (0 = all) but never the reported count: a
+    caller reading "50 row(s), showing 50" must be able to tell a full answer
+    from a clipped one."""
+    if not columns:
+        print("(query returned no columns)")
+        return
+
+    truncated = limit and len(rows) > limit
+    visible = rows[:limit] if limit else rows
+
+    print("| " + " | ".join(columns) + " |")
+    print("| " + " | ".join("---" for _ in columns) + " |")
+    for row in visible:
+        print("| " + " | ".join(_query_cell(v, truncate) for v in row) + " |")
+
+    print(f"\n_{len(rows)} row(s)" + (f", showing {limit}_" if truncated else "_"))
 
 
 def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> None:

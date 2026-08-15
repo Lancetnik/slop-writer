@@ -102,15 +102,23 @@ skills/
   setup-tg-analytic/
     SKILL.md          One-time credential + login setup, run by the user.
 src/
-  slop_writer/        The library the CLIs import, published to PyPI. The three
-                      scripts above declare `slop-writer` in their PEP-723
-                      headers, so `uv run` fetches it — nothing is vendored
-                      into the skill directory.
+  slop_writer/        The library the CLIs import, published to PyPI. It holds
+                      the domain logic; the three scripts above are argument
+                      parsing and output rendering over it. They declare
+                      `slop-writer` in their PEP-723 headers, so `uv run`
+                      fetches it — nothing is vendored into the skill directory.
     db.py             DB schema (source of truth), paths, open helpers. Stdlib only.
+    errors.py         SlopWriterError/UsageError — what the domain raises. Stdlib only.
+    query.py          Read-only SQL guards and execution. Stdlib only.
     tg.py             Telethon session/credential plumbing.
+    messages.py       Telethon Message -> plain fields (media, reactions, albums).
+    scrape.py         The post pipeline: scrape_posts / refresh_posts.
+    group.py          Discussion group: classification, thread linkage, scan_group.
+    stats.py          Broadcast stats: subscribers, views by hour.
+    scheduled.py      Reading the scheduled queue.
+    publish.py        The write surface: schedule / reschedule / edit.
     render.py         Markdown renderers for the per-command summaries.
-    markdown.py       Markdown -> Telethon MessageEntity (tg_publish).
-    group.py          Discussion-group classification helpers. Stdlib only.
+    markdown.py       Markdown -> Telethon MessageEntity (publish only).
 tools/
   check_schema_doc.py  Dev-only: guard SCHEMA <-> references/schema.md drift (not
                        shipped). Pinned to this checkout, not to the released

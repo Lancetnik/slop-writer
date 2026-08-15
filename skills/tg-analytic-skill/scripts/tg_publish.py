@@ -1,47 +1,42 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "slop-writer>=0.1,<0.2",
-#     "telethon>=1.36,<2",
+#     "slop-writer>=0.2,<0.3",
 #     "python-dotenv>=1.0",
 #     "typer>=0.12,<1",
 # ]
 # ///
 """Publish-side CLI: queue a future channel post.
 
-The skill's one *write* path, kept in its own script so "this code can post"
-is auditable at the file level (the read/scrape/query scripts never publish).
-See docs/adr/0003.
+The skill's one *write* entrypoint, kept in its own script so "this code can
+post" is auditable at the file level — the read/scrape/query scripts never
+import `slop_writer.publish`, which is the module that can. See docs/adr/0003.
 
-Pipeline: Markdown --(slop_writer.markdown)--> text + Telethon MessageEntity list
---> client.send_message(schedule), or client.send_file(schedule) when --photo
-attaches images (the body becomes the caption; several photos form one album).
-Scheduling is an MTProto/user-client feature, so this rides the same Telethon
-session as the scrapers — the Bot API cannot schedule.
+Argument parsing and output rendering only: the body is read from --file or
+stdin here, everything after that is `slop_writer.publish`.
 """
 import asyncio
 import logging
 import sys
-from contextlib import contextmanager, nullcontext
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from dotenv import load_dotenv
-from telethon.errors import MediaCaptionTooLongError, MessageTooLongError
-from telethon.tl.functions.messages import (
-    EditMessageRequest,
-    GetScheduledMessagesRequest,
-    SendMediaRequest,
-    SendMultiMediaRequest,
-)
-from telethon.tl.types import Message
 
 from slop_writer.db import env_path
-from slop_writer.markdown import render as render_markdown
+from slop_writer.errors import SlopWriterError
+from slop_writer.publish import (
+    edit_post,
+    parse_schedule_time,
+    prepare_schedule,
+    render_body,
+    reschedule_post,
+    schedule_post,
+)
 from slop_writer.render import summarize_schedule
-from slop_writer.tg import _require_session, channel_session, session_path
+from slop_writer.tg import require_session, session_path
 
 # The CLI layer decides what "the project root" is — the directory the user
 # launched from. `login` lives in the sibling read CLI, so the fix-it hint
@@ -63,20 +58,6 @@ logging.getLogger("telethon").setLevel(logging.WARNING)
 # Updates object — the edit still applies. Mute that one logger; real failures
 # raise exceptions, not warnings.
 logging.getLogger("telethon.client.messageparse").setLevel(logging.ERROR)
-log = logging.getLogger(__name__)
-
-
-# Hardcoded on purpose, with no CLI flag or env override: the guard exists to
-# stop the *agent* driving this CLI from scheduling a post too soon. A
-# configurable floor the agent could pass would be the agent holding its own
-# leash. The human owner can still edit this constant. See docs/adr/0003.
-MIN_LEAD = timedelta(hours=1)
-
-# A Telegram album (grouped media) holds at most 10 items.
-MAX_ALBUM = 10
-# Extensions Telegram accepts as *photos*. Anything else would silently go out
-# as a document attachment, so it's rejected instead.
-PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 app = typer.Typer(help="Publish to a Telegram channel: schedule / reschedule / edit posts.")
 
@@ -87,6 +68,11 @@ def _main() -> None:
     CLI reads `tg_publish.py schedule ...` and stays open to future verbs."""
 
 
+def _fail(exc: SlopWriterError) -> typer.Exit:
+    typer.echo(exc.message + (f"\n{exc.hint}" if exc.hint else ""), err=True)
+    return typer.Exit(code=exc.exit_code)
+
+
 def _read_body(path: str | None, *, optional: bool = False) -> str:
     """Read the Markdown body from a file, or from stdin when `path` is None/`-`.
 
@@ -94,7 +80,10 @@ def _read_body(path: str | None, *, optional: bool = False) -> str:
     metainfo: it produces the clean body and pipes it via a quoted heredoc,
     which passes backticks/`$`/quotes verbatim (no shell escaping). The TTY
     guard turns a bare interactive run into a clear message, not a silent hang
-    — except when the body is `optional` (a photo post may have no caption)."""
+    — except when the body is `optional` (a photo post may have no caption).
+
+    Reading the body is the CLI's job and stops here: the library takes the
+    text, because a file path is not a thing a tool call can hand it."""
     if path in (None, "-"):
         if sys.stdin.isatty():
             if optional:
@@ -113,279 +102,9 @@ def _read_body(path: str | None, *, optional: bool = False) -> str:
         raise typer.Exit(code=2) from None
 
 
-def _render_markdown(path: str | None, *, allow_empty: bool = False) -> tuple[str, list]:
-    """Markdown from --file or stdin -> (plain text, Telethon entities).
-
-    `allow_empty` (photo posts): a missing/empty body is a caption-less post,
-    not an error."""
-    text, entities = render_markdown(_read_body(path, optional=allow_empty))
-    if not text.strip():
-        if allow_empty:
-            return "", []
-        src = "stdin" if path in (None, "-") else f"--file {path!r}"
-        typer.echo(f"{src} renders to an empty post.", err=True)
-        raise typer.Exit(code=2)
-    return text, entities
-
-
-def _utf16_len(text: str) -> int:
-    """Length in UTF-16 code units — the unit Telegram's limits count in."""
-    return len(text.encode("utf-16-le")) // 2
-
-
-def _check_photos(photos: list[str]) -> list[Path]:
-    """Validate --photo paths before touching Telegram: files exist, look like
-    photos, and fit a single album."""
-    if len(photos) > MAX_ALBUM:
-        typer.echo(
-            f"Got {len(photos)} photos; a Telegram album holds at most "
-            f"{MAX_ALBUM}.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-    paths = []
-    for raw in photos:
-        path = Path(raw)
-        if not path.is_file():
-            typer.echo(f"--photo {raw!r}: file not found.", err=True)
-            raise typer.Exit(code=2)
-        if path.suffix.lower() not in PHOTO_EXTS:
-            typer.echo(
-                f"--photo {raw!r}: extension {path.suffix!r} is not a Telegram "
-                f"photo type ({', '.join(sorted(PHOTO_EXTS))}). Other files "
-                "would go out as document attachments — convert the image "
-                "first.",
-                err=True,
-            )
-            raise typer.Exit(code=2)
-        paths.append(path)
-    return paths
-
-
-def _reject_too_long(text: str, *, media: bool) -> None:
-    """Readable report when Telegram rejects the body for length.
-
-    Length is deliberately NOT checked client-side: the cap depends on the
-    account (photo captions: 1024 UTF-16 units, 2048 with Premium; text
-    posts: 4096) and Telegram is the authority — a hardcoded check would
-    wrongly block Premium accounts. Rejection leaves nothing queued/changed."""
-    n = _utf16_len(text)
-    if media:
-        cap = "photo-caption cap (1024 UTF-16 units, 2048 with Telegram Premium)"
-    else:
-        cap = "text-post cap (4096 UTF-16 units)"
-    typer.echo(
-        f"Telegram rejected the body: {n} UTF-16 units is over this account's "
-        f"{cap}. Shorten the body — nothing was queued or changed.",
-        err=True,
-    )
-    raise typer.Exit(code=1)
-
-
-@contextmanager
-def _invert_media_patch(client, invert: bool):
-    """Make the friendly Telethon calls carry `invert_media` (caption above).
-
-    Telethon v1's send_file/edit_message don't expose the flag and never will
-    (feature-frozen, LonamiWebs/Telethon#4410 — the maintainer's suggested
-    route is exactly this monkey patch). Wrap the client's request dispatch
-    and stamp the flag onto the raw send/edit requests the friendly API
-    builds; everything else (uploads, album grouping) passes through
-    untouched."""
-    original = client._call
-
-    async def patched(sender, request, ordered=False, flood_sleep_threshold=None):
-        if isinstance(
-            request, (SendMediaRequest, SendMultiMediaRequest, EditMessageRequest)
-        ):
-            request.invert_media = invert
-        return await original(
-            sender, request, ordered=ordered, flood_sleep_threshold=flood_sleep_threshold
-        )
-
-    client._call = patched
-    try:
-        yield
-    finally:
-        del client._call  # drop the shadow, the class method takes over again
-
-
-def _parse_when(at: str) -> datetime:
-    """ISO-8601-with-offset -> aware datetime, enforcing the lead-time floor.
-
-    Naive (offset-less) values are rejected: for a *published* post, guessing
-    the timezone could place it an hour off and silently defeat the floor."""
-    normalized = at.strip()
-    if normalized.endswith(("Z", "z")):  # 3.10's fromisoformat rejects 'Z'
-        normalized = normalized[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(normalized)
-    except ValueError:
-        typer.echo(
-            f"Invalid --at {at!r}: use ISO-8601 with an offset, e.g. "
-            "2026-06-27T18:00:00+03:00.",
-            err=True,
-        )
-        raise typer.Exit(code=2) from None
-    if dt.tzinfo is None:
-        typer.echo(
-            f"--at {at!r} has no UTC offset. Naive times are ambiguous for a "
-            "published post — include one, e.g. 2026-06-27T18:00:00+03:00.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-    earliest = datetime.now(UTC) + MIN_LEAD
-    if dt < earliest:
-        local_earliest = earliest.astimezone(dt.tzinfo).isoformat(timespec="minutes")
-        typer.echo(
-            f"--at {dt.isoformat()} is too soon: posts must be scheduled at "
-            f"least 1 hour ahead (earliest {local_earliest}).",
-            err=True,
-        )
-        raise typer.Exit(code=1)
-    return dt
-
-
-async def schedule_post(
-    channel: str,
-    text: str,
-    entities: list,
-    when: datetime,
-    session_file: str,
-    photos: list[Path] | None = None,
-    caption_above: bool = False,
-) -> None:
-    async with channel_session(session_file, channel) as (client, entity):
-        log.info("authenticated, scheduling post to %s for %s", channel, when.isoformat())
-        try:
-            if photos:
-                # parse_mode=None matters: with an *empty* entity list send_file
-                # falls back to Telethon's own Markdown parser, which would
-                # mangle literal */_/` in the caption. None disables that
-                # fallback; non-empty entities are used either way. Several
-                # photos become one album, with the caption on its first item.
-                patch = (
-                    _invert_media_patch(client, True)
-                    if caption_above
-                    else nullcontext()
-                )
-                with patch:
-                    sent = await client.send_file(
-                        entity,
-                        [str(p) for p in photos] if len(photos) > 1 else str(photos[0]),
-                        caption=text,
-                        formatting_entities=entities,
-                        parse_mode=None,
-                        schedule=when,
-                    )
-                msg = sent[0] if isinstance(sent, list) else sent
-            else:
-                msg = await client.send_message(
-                    entity,
-                    text,
-                    formatting_entities=entities,
-                    schedule=when,
-                )
-        except MediaCaptionTooLongError:
-            _reject_too_long(text, media=True)
-        except MessageTooLongError:
-            _reject_too_long(text, media=False)
-    summarize_schedule(
-        channel,
-        {
-            "id": msg.id,
-            "date": msg.date.astimezone(UTC).isoformat() if msg.date else None,
-            "requested": when.isoformat(),
-            "text": text,
-            "entities": len(entities),
-            "photos": len(photos) if photos else 0,
-            "caption_above": caption_above,
-        },
-    )
-
-
-async def _get_scheduled(client, entity, msg_id: int) -> Message:
-    """Fetch one post from the channel's scheduled queue by its sched-msg id.
-
-    One round-trip via GetScheduledMessages (no full-history scan). Exits 1
-    with an actionable message if nothing matches — the id is most likely
-    stale (the post published, or was already removed)."""
-    result = await client(GetScheduledMessagesRequest(peer=entity, id=[msg_id]))
-    found = [
-        m
-        for m in getattr(result, "messages", [])
-        if isinstance(m, Message) and m.id == msg_id
-    ]
-    if not found:
-        typer.echo(
-            f"No scheduled post #{msg_id} in the queue. List the queue with "
-            "`tg_scrape.py scheduled --channel <chan>`.",
-            err=True,
-        )
-        raise typer.Exit(code=1)
-    return found[0]
-
-
-async def reschedule_post(
-    channel: str, msg_id: int, when: datetime, session_file: str
-) -> None:
-    async with channel_session(session_file, channel) as (client, entity):
-        existing = await _get_scheduled(client, entity, msg_id)
-        log.info("rescheduling post #%d in %s to %s", msg_id, channel, when.isoformat())
-        # text=None -> Telegram keeps the body and entities, only moves the time.
-        # edit_message returns None for scheduled edits (Telethon can't map the
-        # UpdateNewScheduledMessage response to a Message), so build the summary
-        # from known inputs: the id is stable and the new time is `when`.
-        # The patch re-sends the post's invert_media (caption-above) state: the
-        # raw edit would otherwise silently reset it to caption-below.
-        with _invert_media_patch(client, bool(existing.invert_media)):
-            await client.edit_message(entity, msg_id, schedule=when)
-    summarize_schedule(
-        channel,
-        {
-            "id": msg_id,
-            "date": when.astimezone(UTC).isoformat(),
-            "requested": when.isoformat(),
-            "text": existing.message or "",
-            "entities": None,
-        },
-        action="Rescheduled",
-    )
-
-
-async def edit_post(
-    channel: str, msg_id: int, text: str, entities: list, session_file: str
-) -> None:
-    async with channel_session(session_file, channel) as (client, entity):
-        existing = await _get_scheduled(client, entity, msg_id)
-        # Re-send the existing schedule date: it both keeps the post in the
-        # scheduled queue and is the flag that tells Telegram this edit targets
-        # the scheduled message (not a published one with the same id).
-        when = existing.date
-        log.info("editing scheduled post #%d in %s (time unchanged)", msg_id, channel)
-        # Like reschedule, edit_message returns None for scheduled edits; the id
-        # and time are unchanged, so report from known values. The patch keeps
-        # the post's invert_media (caption-above) state across the edit.
-        try:
-            with _invert_media_patch(client, bool(existing.invert_media)):
-                await client.edit_message(
-                    entity, msg_id, text, formatting_entities=entities, schedule=when
-                )
-        except MediaCaptionTooLongError:
-            _reject_too_long(text, media=True)
-        except MessageTooLongError:
-            _reject_too_long(text, media=False)
-    summarize_schedule(
-        channel,
-        {
-            "id": msg_id,
-            "date": when.astimezone(UTC).isoformat() if when else None,
-            "requested": None,
-            "text": text,
-            "entities": len(entities),
-        },
-        action="Edited",
-    )
+def _body_source(path: str | None) -> str:
+    """How to name the body's origin in an error — only the CLI knows."""
+    return "stdin" if path in (None, "-") else f"--file {path!r}"
 
 
 ChannelOpt = Annotated[
@@ -440,29 +159,28 @@ def schedule(
 ) -> None:
     """Queue a Markdown post to publish at a future time.
 
-    Body is Markdown rendered straight to Telegram entities (_md2entities).
-    --photo attaches images: the body becomes the caption (may be empty) and
-    several photos form one album; --caption-above puts the caption on top of
-    the photos. Length caps are enforced by Telegram, not the CLI (captions:
-    1024, 2048 with Premium; text posts: 4096) — a rejection is reported
-    readably and nothing is queued. The post must be scheduled at least
-    1 hour ahead; scheduled posts are not persisted (their ids differ from
-    published ids and carry no engagement)."""
-    when = _parse_when(at)
-    photos = _check_photos(photo) if photo else None
-    if caption_above and not photos:
-        typer.echo("--caption-above only makes sense with --photo.", err=True)
-        raise typer.Exit(code=2)
-    text, entities = _render_markdown(file, allow_empty=bool(photos))
-    if caption_above and not text.strip():
-        typer.echo("--caption-above needs a non-empty body to place above.", err=True)
-        raise typer.Exit(code=2)
-    _require_session(session_file, LOGIN_COMMAND)
-    asyncio.run(
-        schedule_post(
-            channel, text, entities, when, session_file, photos, caption_above
+    Body is Markdown rendered straight to Telegram entities. --photo attaches
+    images: the body becomes the caption (may be empty) and several photos
+    form one album; --caption-above puts the caption on top of the photos.
+    Length caps are enforced by Telegram, not the CLI (captions: 1024, 2048
+    with Premium; text posts: 4096) — a rejection is reported readably and
+    nothing is queued. The post must be scheduled at least 1 hour ahead;
+    scheduled posts are not persisted (their ids differ from published ids
+    and carry no engagement)."""
+    body = _read_body(file, optional=bool(photo))
+    try:
+        draft = prepare_schedule(
+            body,
+            at,
+            photo_paths=photo,
+            caption_above=caption_above,
+            body_source=_body_source(file),
         )
-    )
+        require_session(session_file, LOGIN_COMMAND)
+        result = asyncio.run(schedule_post(channel, draft, session_file))
+    except SlopWriterError as exc:
+        raise _fail(exc) from None
+    summarize_schedule(result.channel, result.item, result.action)
 
 
 @app.command("reschedule")
@@ -476,9 +194,13 @@ def reschedule(
 
     Same 1-hour floor as `schedule` (it sets a new publish time). Identify the
     post by its `sched-msg` id from `tg_scrape.py scheduled`."""
-    when = _parse_when(at)
-    _require_session(session_file, LOGIN_COMMAND)
-    asyncio.run(reschedule_post(channel, id, when, session_file))
+    try:
+        when: datetime = parse_schedule_time(at)
+        require_session(session_file, LOGIN_COMMAND)
+        result = asyncio.run(reschedule_post(channel, id, when, session_file))
+    except SlopWriterError as exc:
+        raise _fail(exc) from None
+    summarize_schedule(result.channel, result.item, result.action)
 
 
 @app.command("edit")
@@ -493,9 +215,14 @@ def edit(
     Reads the new body from --file or stdin and renders it the same way
     `schedule` does. No 1-hour floor check — editing text never moves the
     publish time. Identify the post by its `sched-msg` id from `scheduled`."""
-    text, entities = _render_markdown(file)
-    _require_session(session_file, LOGIN_COMMAND)
-    asyncio.run(edit_post(channel, id, text, entities, session_file))
+    body = _read_body(file)
+    try:
+        text, entities = render_body(body, source=_body_source(file))
+        require_session(session_file, LOGIN_COMMAND)
+        result = asyncio.run(edit_post(channel, id, text, entities, session_file))
+    except SlopWriterError as exc:
+        raise _fail(exc) from None
+    summarize_schedule(result.channel, result.item, result.action)
 
 
 if __name__ == "__main__":

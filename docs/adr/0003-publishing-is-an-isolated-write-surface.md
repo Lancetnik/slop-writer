@@ -87,6 +87,23 @@ the return value, and the benign "No random_id" warning from
 - **Configurable / overridable lead time** — rejected: it would let the agent
   bypass the very guard it is meant to enforce.
 
+## Update — slop-writer 0.2.0
+
+The domain logic moved out of the scripts and into the `slop_writer` package
+(Lancetnik/slop-writer#22), so the sentences above about `_tg.py`, `_common.py`
+and `_md2entities.py` now name `slop_writer/tg.py`, `slop_writer/db.py` and
+`slop_writer/markdown.py`. The isolation rule survives intact, one level down:
+**`slop_writer/publish.py` is the only module that can post**, no read path
+imports it, and `tg_publish.py` is the only script that does. Reading the
+scheduled queue is a read, so it lives in `slop_writer/scheduled.py` — which
+`publish.py` imports, never the reverse.
+
+The 1-hour floor moved with the code: `MIN_LEAD` is now a constant in
+`slop_writer/publish.py`, still hardcoded, still without a flag or env
+override. It travels with the *package* rather than the script, which is what
+matters once a second caller (the MCP server) exists — an agent driving the
+server cannot reach around it any more than one driving the CLI could.
+
 ## Consequences
 
 - A scheduled post is not persisted: its id is a scheduled-message id distinct

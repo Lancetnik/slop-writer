@@ -31,24 +31,48 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   their missing-credentials/session errors, so the agent knows to stop and ask
   rather than attempt an interactive login.
 - `src/slop_writer/` — the **library the CLIs import**, published to PyPI as
-  `slop-writer`. The scripts name it in their PEP-723 headers
-  (`slop-writer>=0.1,<0.2`), so `uv run` fetches it from the index; nothing is
-  vendored into the skill directory. Modules import each other relatively
-  (`from .db import …`).
+  `slop-writer`. It holds the domain logic: the scripts are argument parsing
+  and output rendering, nothing else, so the MCP server can be a *second
+  caller* of the same functions rather than a rewrite. The scripts name it in
+  their PEP-723 headers (`slop-writer>=0.2,<0.3`), so `uv run` fetches it from
+  the index; nothing is vendored into the skill directory. Modules import each
+  other relatively (`from .db import …`).
   - `db.py` — paths, the `SCHEMA` + `FTS_SCHEMA` constants (**source of truth**
     for the DB layout), and DB open helpers. **Stdlib-only**, so importing it
     doesn't drag Telethon in.
+  - `errors.py` — `SlopWriterError` / `UsageError` (exit 2), carrying
+    `message` / `hint` / `code`. The domain **raises**; each entrypoint decides
+    how to report. Stdlib-only.
+  - `query.py` — the read-only SQL guards (`validate_read_only`) and execution
+    (`run_query`, `schema_listing`). **Stdlib-only** with `db.py`, which is
+    what keeps a query answerable without a Telegram client.
   - `tg.py` — Telethon session/credential plumbing (`_credentials`,
-    `make_client`, `channel_session`, `_require_session`, `_resolve_peer`,
-    `session_path`) shared by `tg_scrape.py` and `tg_publish.py`.
-    Telethon-dependent, so kept out of stdlib-only `db.py`.
+    `make_client`, `channel_session`, `require_session`, `resolve_peer`,
+    `session_path`). Telethon-dependent, so kept out of stdlib-only `db.py`.
+  - `messages.py` — Telethon `Message` → plain fields (`media_type`,
+    `count_reactions`, `sender_fields`, `group_albums`, `tme_link`). No DB, no
+    network, so `scrape` and `group` share it without importing each other.
+  - `scrape.py` — the post pipeline: `scrape_posts` / `refresh_posts` over one
+    `ingest` lifecycle, album completion, and the `posts`/`post_metrics` writes.
+  - `group.py` — the discussion group: service/admin-log classification, thread
+    linkage, the `group_messages`/`group_events` writers, and `scan_group`.
+    Imports Telethon (the stdlib-only property went with 0.2.0 — one flat
+    dependency set made it free of value, and `db`/`query` are the modules
+    where it earns its keep). `scrape` imports the row writers here, never the
+    reverse — comments *are* group messages (adr/0002).
+  - `stats.py` — the broadcast-stats API: `fetch_subscribers`,
+    `fetch_views_by_hour`, and the graph decoding both need.
+  - `scheduled.py` — reading the scheduled queue (`list_scheduled`,
+    `get_scheduled_message`). Read-only, and kept out of `publish.py` so the
+    read CLI never imports the module that can post.
+  - `publish.py` — **the write surface** (adr/0003): `prepare_schedule`
+    validates before any session is required, then `schedule_post` /
+    `reschedule_post` / `edit_post`. Nothing on a read path imports it.
   - `render.py` — pure-presentation Markdown renderers (`summarize_*`); plain
     dicts in, stdout out — no Telethon or SQLite types.
-  - `markdown.py` — `tg_publish.py` only: walks mistune's Markdown AST straight
+  - `markdown.py` — `publish.py` only: walks mistune's Markdown AST straight
     to Telethon `MessageEntity` objects (no HTML, no sulguk). Tables render as
     monospace `pre`; UTF-16 offset accounting lives here.
-  - `group.py` — discussion-group service/admin-log classification helpers used
-    by `tg_scrape.py group`. Stdlib-only and duck-typed over Telethon objects.
 - `tools/check_schema_doc.py` — **dev-only** drift guard, kept *outside* the
   skill so it isn't shipped to users; run after editing `SCHEMA` or
   `references/schema.md`. Its PEP-723 header pins `slop-writer` to *this
@@ -69,7 +93,7 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   For local development, pass `--with-editable .` to run against the working
   tree (it layers over the resolved release; the version pin still has to be
   satisfiable from the index).
-- **mistune** — `tg_publish.py` only: parses the Markdown post body to an AST,
+- **mistune** — `slop_writer.markdown` only: parses the Markdown post body to an AST,
   which `slop_writer/markdown.py` walks straight to Telethon `MessageEntity` objects (no
   HTML hop, no sulguk). mistune (CommonMark-ish) over Python-Markdown on
   purpose: it keeps `#hashtag` lines literal instead of parsing them as `<h1>`,
@@ -79,8 +103,10 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
 - **Telethon** (`>=1.36,<2`) — Telegram client API (not the bot API). Auth = a
   `session.session` file from a one-time interactive `login` (needs a TTY for
   the SMS code, so it can't run via the Bash tool — tell the user to run it).
-- **typer** for the CLI, **SQLite** for storage (one DB file per channel,
-  leading `@` stripped from the filename). `tg_query.py` opens `?mode=ro`.
+- **typer** for the CLI — a *script* dependency only, never the library's: the
+  domain raises `SlopWriterError` and the script turns it into stderr + an exit
+  code. **SQLite** for storage (one DB file per channel, leading `@` stripped
+  from the filename). `run_query` opens `?mode=ro`.
 
 ## tg_scrape.py commands
 
@@ -117,7 +143,13 @@ Scrape selection flags are mutually exclusive; default to `--latest N`
 
 ## Key architecture facts (non-obvious)
 
-- Handles resolve through `_resolve_peer` **before** any `open_db` call, so a
+- **The domain raises, the entrypoint reports.** No module under
+  `src/slop_writer/` prints an error or exits: it raises `SlopWriterError`
+  (`UsageError` for exit 2) and the CLI turns that into stderr + an exit code.
+  This is what lets the MCP server call the same function and build a JSON
+  payload instead. `code` is the #15 vocabulary, and is `None` at the raise
+  sites that vocabulary doesn't name yet.
+- Handles resolve through `resolve_peer` **before** any `open_db` call, so a
   typo exits 1 with `Cannot resolve @x` instead of a raw Telethon traceback
   plus a stray empty `.tg-analytic/<typo>.db`. Keep that order when adding a
   command; zero scraped posts then means an empty window, never a bad handle.
@@ -128,7 +160,7 @@ Scrape selection flags are mutually exclusive; default to `--latest N`
   missing members by id (≤10 per album, one round-trip) before `process_post`
   picks the head, so a captionless member never becomes a post of its own. That
   phantom row was silent — Telegram reports views/forwards on every album
-  member — and doubled the album in every `SUM`/`AVG`. `fetch` passes
+  member — and doubled the album in every `SUM`/`AVG`. `refresh_posts` passes
   `window_contiguous=False` because arbitrary ids can't prove an album whole.
   `heal_album_phantoms` (in `slop_writer/db.py`, run from `open_db` and again after a
   scrape) deletes rows left by pre-fix runs, and `upsert_post` clears
@@ -138,13 +170,15 @@ Scrape selection flags are mutually exclusive; default to `--latest N`
   `.chats`, `.full_chat`, `.forwards` etc. as unknown attributes throughout —
   these warnings are expected noise, not real errors.
 - Every command prints a Markdown summary to stdout designed to be pasted to the
-  user as-is. When adding a command, follow that convention (`summarize_*`).
+  user as-is. The domain function **returns** the summary shape (`ScrapeResult`,
+  `GroupScanResult`, …) and the CLI hands it to `summarize_*`; a new command
+  follows that split rather than printing from the library.
 - Full-text search (docs/adr/0004): `posts_fts`/`gm_fts` are FTS5
   external-content indexes synced by `FTS_SCHEMA` triggers; `open_db` applies
   `FTS_SCHEMA` best-effort (no FTS5 module → warning, search lost, scraping
   fine) and backfills via `'rebuild'` only when a table was just created.
   `MATCH 'stem*'` is the canonical text search (unicode61, no stemming);
-  `tg_query.py` hides the `*_fts_*` shadow tables from its error listing.
+  `schema_listing` hides the `*_fts_*` shadow tables from its error listing.
 - `group_messages` is the **only** comment store (docs/adr/0002 superseded
   the separate `post_comments` table): `scrape`/`fetch` replace each post's
   thread (`thread_post_id` = post id), `group` upserts its scan window.
