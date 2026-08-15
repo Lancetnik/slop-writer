@@ -15,6 +15,13 @@ Input validation is split from the network work on purpose: `prepare_schedule`
 takes everything the caller supplied and fails before a session is required,
 which keeps a bad `at` or a missing photo cheap to report and stops the two
 callers (CLI, server) from having to reproduce the same order of checks.
+
+Messages here name **arguments, never CLI flags**. The same string reaches a
+human reading stderr and a model reading a tool result, and `--at` is a thing
+only one of them has — a model told to fix `--at` is being pointed at a
+surface it cannot see. Where the origin genuinely differs the caller supplies
+it (`body_source`): the CLI says "stdin", the server says "the `body`
+argument".
 """
 
 import logging
@@ -81,22 +88,23 @@ def parse_schedule_time(at: str) -> datetime:
         dt = datetime.fromisoformat(normalized)
     except ValueError:
         raise UsageError(
-            f"Invalid --at {at!r}: use ISO-8601 with an offset, e.g. "
-            "2026-06-27T18:00:00+03:00.",
+            f"Invalid schedule time {at!r}: use ISO-8601 with an offset, "
+            "e.g. 2026-06-27T18:00:00+03:00.",
             code="INVALID_SCHEDULE_TIME",
         ) from None
     if dt.tzinfo is None:
         raise UsageError(
-            f"--at {at!r} has no UTC offset. Naive times are ambiguous for a "
-            "published post — include one, e.g. 2026-06-27T18:00:00+03:00.",
+            f"Schedule time {at!r} has no UTC offset. Naive times are "
+            "ambiguous for a published post — include one, e.g. "
+            "2026-06-27T18:00:00+03:00.",
             code="INVALID_SCHEDULE_TIME",
         )
     earliest = datetime.now(UTC) + MIN_LEAD
     if dt < earliest:
         local_earliest = earliest.astimezone(dt.tzinfo).isoformat(timespec="minutes")
         raise SlopWriterError(
-            f"--at {dt.isoformat()} is too soon: posts must be scheduled at "
-            f"least 1 hour ahead (earliest {local_earliest}).",
+            f"Schedule time {dt.isoformat()} is too soon: posts must be "
+            f"scheduled at least 1 hour ahead (earliest {local_earliest}).",
             code="INVALID_SCHEDULE_TIME",
         )
     return dt
@@ -116,11 +124,11 @@ def check_photos(photos: list[str]) -> list[Path]:
         path = Path(raw)
         if not path.is_file():
             raise UsageError(
-                f"--photo {raw!r}: file not found.", code="INVALID_ARGUMENT"
+                f"Photo {raw!r}: file not found.", code="INVALID_ARGUMENT"
             )
         if path.suffix.lower() not in PHOTO_EXTS:
             raise UsageError(
-                f"--photo {raw!r}: extension {path.suffix!r} is not a Telegram "
+                f"Photo {raw!r}: extension {path.suffix!r} is not a Telegram "
                 f"photo type ({', '.join(sorted(PHOTO_EXTS))}). Other files "
                 "would go out as document attachments — convert the image "
                 "first.",
@@ -165,7 +173,7 @@ def prepare_schedule(
     photos = check_photos(photo_paths) if photo_paths else []
     if caption_above and not photos:
         raise UsageError(
-            "--caption-above only makes sense with --photo.",
+            "Placing the caption above needs at least one photo attached.",
             code="INVALID_ARGUMENT",
         )
     text, entities = render_body(
@@ -173,7 +181,7 @@ def prepare_schedule(
     )
     if caption_above and not text.strip():
         raise UsageError(
-            "--caption-above needs a non-empty body to place above.",
+            "Placing the caption above needs a non-empty body to place.",
             code="INVALID_ARGUMENT",
         )
     return ScheduleDraft(text, entities, when, photos, caption_above)

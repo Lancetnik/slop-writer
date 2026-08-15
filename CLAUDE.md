@@ -75,8 +75,10 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     on a stdio server stdout is the JSON-RPC transport (#16). The CLIs do
     `print(summarize_x(...))`; one renderer serves both callers.
   - `server.py` — the **MCP server**: `build_server(project_root)` registers
-    the read tools, `assert_text_only` is the startup guard. Argument parsing
-    and rendering only; no Telegram logic.
+    all eleven tools, `assert_text_only` is the startup guard, and
+    `WRITE_TOOLS` / `permission_rules()` are the read/write split written down
+    for `install` to copy. Argument parsing and rendering only; no Telegram
+    logic.
   - `cli.py` — the `slop-writer` console script (argparse, not typer). Decides
     the project root — from cwd, or `--project` — and loads `.env`.
   - `markdown.py` — `publish.py` only: walks mistune's Markdown AST straight
@@ -96,6 +98,11 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     already expects to move. One quirk the factories hide: `Message.text` is a
     property returning `None` until assigned, and every `msg.text or ""` in
     the package depends on it.
+  - `test_server.py` builds a real `FastMCP` over a `tmp_path` root and asks
+    it questions — the roster, `outputSchema` absence, the `ask`-rules-vs-tool
+    -names comparison, and the write tools' failures up to (never past) the
+    missing session. It is the one place the MCP contract is checked without
+    a client.
   - Nothing in the suite touches a Telegram session, `.tg-analytic/`, or the
     network. Live runs stay the acceptance step; they are no longer the only
     one.
@@ -160,15 +167,36 @@ The shipped console script. `install` / `init` arrive with #20.
 | --- | --- | --- |
 | `serve --mcp` | run the MCP server over stdio; `--project PATH` overrides the cwd-derived project root | launched by the MCP client, not by hand |
 
-## MCP tools (read surface)
+## MCP tools
 
-Eight read tools, server name `slop-writer`, so a permission rule reads
-`mcp__slop-writer__run_query`. The write tools land with #18.
+Eleven tools, server name `slop-writer`, so a permission rule reads
+`mcp__slop-writer__run_query`.
 
-`scrape_posts`, `refresh_posts`, `scan_linked_group`, `scan_standalone_group`,
-`fetch_subscribers`, `fetch_views_by_hour`, `list_scheduled`, `run_query`.
+- **Reads** (un-gated): `scrape_posts`, `refresh_posts`, `scan_linked_group`,
+  `scan_standalone_group`, `fetch_subscribers`, `fetch_views_by_hour`,
+  `list_scheduled`, `run_query`.
+- **Telegram writes** (gated): `publish_schedule`, `publish_reschedule`,
+  `publish_edit`.
 
 Non-obvious, and enforced in `server.py`:
+
+- **The `publish_` prefix is the read/write split**, not a naming style: Claude
+  Code matches permission rules by tool *name*, and `server.py` imports the
+  read paths and `publish.py` alike — so adr/0003's file-level auditability
+  stops at the module, and the entrypoint's half of it is the name. `install`
+  (#20) writes `permission_rules()` — `allow: [mcp__slop-writer]` plus three
+  `ask` entries — into `.claude/settings.json`; the roster and the rules live
+  in one module because a tool renamed without its rule is silently ungated,
+  and `tests/test_server.py` compares the two halves.
+- `_meta["anthropic/requiresUserInteraction"]` is **rejected** (#15, restated
+  in adr/0003): it survives `bypassPermissions` but makes publishing
+  impossible headless, which forecloses autoposting by the channel's own
+  owner. So a misfire is unlikely, not impossible — `bypassPermissions` walks
+  past an `ask` rule, and nothing in the Claude Code CLI adds permission rules.
+- **The write tools validate before they require a session**, mirroring the
+  CLI: a malformed `at` must answer with the argument to fix, not with
+  "run `slop-writer init`". The empty-body error names `` `body` `` where the
+  CLI names stdin or `--file`.
 
 - **Text only, never `structuredContent`** — Claude Code discards the content
   blocks when structure is present (#12), so structure travels *inside* text.

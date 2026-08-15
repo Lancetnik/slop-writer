@@ -104,6 +104,45 @@ override. It travels with the *package* rather than the script, which is what
 matters once a second caller (the MCP server) exists — an agent driving the
 server cannot reach around it any more than one driving the CLI could.
 
+## Update — the MCP write tools
+
+Lancetnik/slop-writer#18 gives the three commands a second caller: the MCP
+tools `publish_schedule`, `publish_reschedule` and `publish_edit`. They are
+argument parsing and rendering over the same `slop_writer.publish` functions —
+`MIN_LEAD`, the naive-time rejection and the Markdown→entities walk are one
+implementation with two front doors, so an agent driving the server cannot
+reach around a guard an agent driving the CLI could not.
+
+**File-level auditability does not survive at the entrypoint.** `server.py`
+imports the read paths and `publish.py` alike; there is one server, not two.
+What carries the split there is the **`publish_` name prefix**, because Claude
+Code matches permission rules by tool name — so the roster and its rules are
+kept as one fact in `slop_writer/server.py` (`WRITE_TOOLS`,
+`permission_rules()`), which `install` writes out and which a test compares
+against the registered tools. A `publish_*` tool added without its rule fails
+the suite rather than shipping ungated. Below the entrypoint the original rule
+is intact: `publish.py` is still the only module that can post, and no read
+path imports it.
+
+**Two strengths of lock were available, and the weaker one is deliberate.**
+`_meta["anthropic/requiresUserInteraction"]` is a server-side flag that
+survives `bypassPermissions` and beats a server-wide `allow` — verified in
+Lancetnik/slop-writer#12. It was **rejected** in favour of three `ask` rules:
+
+- `requiresUserInteraction` makes the publish tools unusable in headless `-p`
+  **at all**. Scheduled autoposting by the channel's own owner is a legitimate
+  use we have no standing to forbid, and this ADR's guard was always aimed at
+  *the agent scheduling something too soon*, never at the human.
+- The `ask` rule is a speed bump for the agent that the human can edit. The
+  server-side flag is a wall neither can move without a new release.
+
+The price is stated rather than hidden: a user running `bypassPermissions`
+slips straight past an `ask` rule, and nothing in Claude Code's CLI *adds*
+permission rules, so the block only exists if `install` writes it (or the user
+does). A misfire is therefore *unlikely*, not *impossible* — the impossible
+version costs the autoposting future, and that trade is what this section
+records.
+
 ## Consequences
 
 - A scheduled post is not persisted: its id is a scheduled-message id distinct
@@ -124,3 +163,8 @@ server cannot reach around it any more than one driving the CLI could.
   who wants an approval gate must configure their own (or fall back to the
   `login`-style TTY pattern). The hardcoded 1-hour floor, by contrast, is in
   the script and travels with it.
+  **Superseded for the MCP surface** (see the update above): the gate is now
+  three explicit `ask` rules on the `publish_*` tools, and it *does* travel
+  with the distribution — `install` writes it, from a list that lives beside
+  the tools it names. The bullet still describes the scripts, which keep
+  prompting by virtue of being un-allow-listed Bash.

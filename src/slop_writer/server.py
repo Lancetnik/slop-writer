@@ -26,6 +26,12 @@ Four invariants, each decided elsewhere and enforced here:
    server configuration, closed over by `build_server` — invisible to the
    model, and the seam a hosted multi-tenant server would replace with a
    tenant lookup.
+5. **Telegram writes are gated by *name*.** This module imports the read paths
+   and `publish` alike, so adr/0003's "auditable at the file level" no longer
+   holds at the entrypoint: what carries the split here is the `publish_`
+   prefix, which is what a permission rule matches on. `WRITE_TOOLS` and
+   `permission_rules` are that split written down, so `install` (#20) copies a
+   list it cannot get out of step with.
 """
 
 import functools
@@ -46,10 +52,14 @@ from . import __version__
 from .db import data_dir
 from .errors import SlopWriterError
 from .group import scan_group
+from .publish import edit_post, parse_schedule_time, prepare_schedule, render_body
+from .publish import reschedule_post as reschedule_scheduled_post
+from .publish import schedule_post as send_scheduled_post
 from .query import run_query as run_sql
 from .render import (
     summarize_group,
     summarize_query,
+    summarize_schedule,
     summarize_scheduled,
     summarize_scrape,
     summarize_subscribers,
@@ -65,6 +75,34 @@ from .tg import require_session, session_path
 log = logging.getLogger(__name__)
 
 SERVER_NAME = "slop-writer"
+
+#: The tools that write to *Telegram*. Scans write too — to the local SQLite
+#: DB — but they are idempotent re-upserts, and prompting on them trains the
+#: human to click through, which is a net loss of safety (#15).
+#:
+#: The `publish_` prefix is load-bearing rather than cosmetic: Claude Code
+#: matches permission rules by tool name, so the name is the only thing
+#: carrying the read/write split into the prompt.
+WRITE_TOOLS = ("publish_schedule", "publish_reschedule", "publish_edit")
+
+
+def permission_rules() -> dict[str, list[str]]:
+    """The permissions block `install` writes into `.claude/settings.json`.
+
+    It lives here, next to the roster it matches, because the two are one fact
+    in two files: a tool renamed without its rule silently loses its gate, and
+    a rule naming no tool is a gate over nothing. `install` (#20) copies this;
+    `tests/test_server.py` asserts the halves still line up.
+
+    Precedence is deny → ask → allow with specificity *ignored*, so the three
+    `ask` entries beat the server-wide `allow` (verified in #12).
+
+    A returned dict, not a constant: nothing should be able to edit the gate
+    of every other caller by mutating a shared literal."""
+    return {
+        "allow": [f"mcp__{SERVER_NAME}"],
+        "ask": [f"mcp__{SERVER_NAME}__{name}" for name in WRITE_TOOLS],
+    }
 
 # The two failures whose remedy is a human at a terminal. The domain's own
 # hints name the CLI's remedy (a setup skill, a script path); the server's
@@ -260,6 +298,12 @@ def build_server(project_root: Path) -> FastMCP:
     # — to the local SQLite DB — so they are not readOnly, but they are
     # idempotent re-upserts, which is why #15 leaves them un-gated.
     local_write = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+    # The Telegram writes. `publish_edit` is the destructive one: it discards
+    # the body it replaces, while scheduling and rescheduling add or move.
+    # Set for spec-correctness and relied on for nothing — #12 found the
+    # annotations empirically inert; `permission_rules` is the actual gate.
+    telegram_write = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+    telegram_overwrite = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
 
     @_tool(
         annotations=local_write,
@@ -458,6 +502,106 @@ def build_server(project_root: Path) -> FastMCP:
         # is what lets an analytics question be answered with no client at all.
         result = run_sql(sql, normalize_channel(channel), output_dir)
         return summarize_query(result.columns, result.rows, limit, truncate_cells)
+
+    # ----------------------------------------------------------------------
+    # The write surface (adr/0003). Three tools, gated by `permission_rules`.
+    #
+    # Each validates *before* `_session()`, exactly as the CLI does: a bad
+    # time or an unreadable photo is worth reporting without a session, and it
+    # keeps the failure the model sees pointed at the argument it can fix
+    # rather than at setup it cannot.
+    # ----------------------------------------------------------------------
+
+    # `body` arrives as an argument here, where the CLI reads a file or stdin,
+    # so the "where did this text come from" half of an empty-body error has to
+    # name the argument instead.
+    body_source = "the `body` argument"
+
+    @_tool(
+        annotations=telegram_write,
+        description=(
+            "Queue a new post to a Telegram channel at a future time. The post "
+            "is SCHEDULED, not published: it sits in the channel's queue until "
+            "`at`, and until then it can still be moved "
+            "(`publish_reschedule`) or rewritten (`publish_edit`).\n"
+            "`body` is Markdown, rendered straight to Telegram formatting "
+            "entities. `at` is ISO-8601 WITH a UTC offset (e.g. "
+            "2026-06-27T18:00:00+03:00) and must be at least 1 hour ahead — a "
+            "time without an offset is rejected rather than guessed at, and "
+            "the 1-hour floor has no override.\n"
+            "`photo_paths` attaches local image files (.jpg/.jpeg/.png/.webp, "
+            "up to 10 as one album) and makes `body` their caption, which may "
+            "be empty; `caption_above` puts that caption on top of them. Body "
+            "length is capped by Telegram, not by this server, and a rejected "
+            "body queues nothing.\n"
+            "Requires post rights on the channel. Nothing is stored locally, "
+            "and the `sched-msg` id in the reply is NOT the id the post gets "
+            "once it publishes."
+        ),
+    )
+    async def publish_schedule(
+        channel: str,
+        body: str,
+        at: str,
+        photo_paths: list[str] | None = None,
+        caption_above: bool = False,
+    ) -> str:
+        draft = prepare_schedule(
+            body,
+            at,
+            photo_paths=photo_paths,
+            caption_above=caption_above,
+            body_source=body_source,
+        )
+        _session()
+        result = await send_scheduled_post(
+            normalize_channel(channel), draft, session_file
+        )
+        return summarize_schedule(result.channel, result.item, result.action)
+
+    @_tool(
+        annotations=telegram_write,
+        description=(
+            "Move an already-scheduled post to a different time. Body, photos "
+            "and caption position are untouched — only the publish time "
+            "changes.\n"
+            "`message_id` is the `sched-msg` id from `list_scheduled`, not the "
+            "id of a published post. `at` is ISO-8601 with a UTC offset and is "
+            "held to the same 1-hour floor as `publish_schedule`, because it "
+            "sets a new publish time.\n"
+            "Requires post rights on the channel."
+        ),
+    )
+    async def publish_reschedule(channel: str, message_id: int, at: str) -> str:
+        when = parse_schedule_time(at)
+        _session()
+        result = await reschedule_scheduled_post(
+            normalize_channel(channel), message_id, when, session_file
+        )
+        return summarize_schedule(result.channel, result.item, result.action)
+
+    @_tool(
+        annotations=telegram_overwrite,
+        description=(
+            "Replace the body of an already-scheduled post. The publish time "
+            "is untouched, and there is NO 1-hour floor here: fixing a typo on "
+            "an imminent post must not be blocked.\n"
+            "`body` is the whole replacement text in Markdown — it is not "
+            "appended, and the previous body is gone. Read the post first with "
+            "`list_scheduled` if you are editing text you did not write in "
+            "this session. `message_id` is that tool's `sched-msg` id.\n"
+            "On a post with photos, `body` is the caption; the photos "
+            "themselves cannot be changed by this tool.\n"
+            "Requires post rights on the channel."
+        ),
+    )
+    async def publish_edit(channel: str, message_id: int, body: str) -> str:
+        text, entities = render_body(body, source=body_source)
+        _session()
+        result = await edit_post(
+            normalize_channel(channel), message_id, text, entities, session_file
+        )
+        return summarize_schedule(result.channel, result.item, result.action)
 
     return mcp
 

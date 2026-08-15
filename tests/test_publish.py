@@ -240,7 +240,29 @@ def test_a_text_post_still_needs_a_body():
 def test_caption_above_without_photos_is_rejected():
     with pytest.raises(UsageError) as exc:
         prepare_schedule("body", iso_in(SOON), caption_above=True)
-    assert "only makes sense with --photo" in exc.value.message
+    assert "at least one photo" in exc.value.message
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: parse_schedule_time("tomorrow"),
+        lambda: parse_schedule_time(iso_in(TOO_SOON)),
+        lambda: parse_schedule_time(
+            (datetime.now(UTC) + SOON).replace(tzinfo=None).isoformat()
+        ),
+        lambda: check_photos(["/nope/missing.jpg"]),
+        lambda: check_photos(["/nope/clip.gif"]),
+        lambda: prepare_schedule("body", iso_in(SOON), caption_above=True),
+    ],
+)
+def test_no_message_names_a_cli_flag(call):
+    """The same string reaches a human reading stderr and a model reading a
+    tool result, and `--at` is a thing only one of them has. Found live: the
+    MCP server was telling the model to fix a flag it cannot see."""
+    with pytest.raises(SlopWriterError) as exc:
+        call()
+    assert "--" not in exc.value.message
 
 
 def test_caption_above_needs_something_to_place_above(images):
