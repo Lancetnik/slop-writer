@@ -1,4 +1,9 @@
-# slop-writer
+<picture>
+  <source media="(prefers-color-scheme: dark)"
+          srcset="https://raw.githubusercontent.com/Lancetnik/slop-writer/main/docs/assets/logo-dark.svg">
+  <img src="https://raw.githubusercontent.com/Lancetnik/slop-writer/main/docs/assets/logo.svg"
+       alt="slop-writer" width="260">
+</picture>
 
 A [Claude Code](https://claude.com/claude-code) skill that analyzes a Telegram
 channel:
