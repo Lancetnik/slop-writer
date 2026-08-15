@@ -307,6 +307,34 @@ async def assert_text_only(mcp: FastMCP) -> None:
         )
 
 
+def _complete_sdk_settings_model() -> None:
+    """Resolve the SDK's own `Settings` model before anything constructs it.
+
+    `mcp.server.fastmcp.server.Settings` declares `lifespan` with a forward
+    reference it never resolves, so pydantic-settings warns
+    `IncompleteFieldDefinitionWarning` on every `FastMCP(...)` — meaning every
+    server start. On stdio that lands in stderr, which is where the server's
+    own log lines live, so the first thing a reader sees is a five-line warning
+    about somebody else's model.
+
+    `model_rebuild()` is the fix the warning itself asks for, and it is not
+    suppression: the class ends up correctly defined rather than quietly
+    broken. Doing it here, at the boundary that owns the SDK, keeps it out of
+    the domain — and out of a `filterwarnings` that would also hide the same
+    warning about *our* models.
+
+    Best-effort by construction: this reaches into another package's private
+    shape, so a moved class costs a noisy stderr and never a failed start. The
+    upstream fix belongs upstream; `mcp` 1.29 is the newest release under the
+    `<2` pin and still carries it."""
+    try:
+        from mcp.server.fastmcp.server import Settings
+
+        Settings.model_rebuild()
+    except Exception:  # pragma: no cover - cosmetic, never load-bearing
+        pass
+
+
 def build_server(project_root: Path) -> FastMCP:
     """The server for one project root.
 
@@ -321,6 +349,7 @@ def build_server(project_root: Path) -> FastMCP:
     output_dir = data_dir(project_root)
     session_file = str(session_path(project_root))
 
+    _complete_sdk_settings_model()
     mcp = FastMCP(name=SERVER_NAME)
     # FastMCP takes no `version`, so `initialize` would otherwise answer with
     # the SDK's — which is the wrong number to read off a bug report. Private

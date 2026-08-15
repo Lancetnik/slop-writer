@@ -93,7 +93,12 @@ disk.
   - `render.py` — pure-presentation Markdown renderers (`summarize_*`); plain
     dicts in, **a string out** — no Telethon or SQLite types, and no `print`:
     on a stdio server stdout is the JSON-RPC transport (#16). The CLIs do
-    `print(summarize_x(...))`; one renderer serves both callers.
+    `print(summarize_x(...))`; one renderer serves both callers. `_handle`
+    is what keeps "both callers" true for the heading: `normalize_channel`
+    strips `@` for *identity* (one channel, one DB file), so display puts it
+    back, and only on a username-shaped label — a title or an invite link is
+    left alone. Two callers that print different headings for one scan is the
+    bug it fixes.
   - `server.py` — the **MCP server**: `build_server(project_root)` registers
     all eleven tools, `assert_text_only` is the startup guard, and
     `WRITE_TOOLS` / `permission_rules()` are the read/write split written down
@@ -444,3 +449,13 @@ the call result. `--caption-above` rides an `invert_media` monkey patch
   thread (`thread_post_id` = post id), `group` upserts its scan window.
   Engagement queries always filter `is_thread_root = 0`. `group_events` PK
   is `(id, user_id)` — one add-user service message can carry several users.
+- **A join count carries its source, or it is unreadable.** Without the admin
+  log the counts are a *floor*, because Telegram suppresses service messages
+  during exactly the join bursts worth counting — so `_fetch_admin_log_events`
+  returns whether it could read the log at all (empty is ambiguous: no
+  membership changes and no admin rights look identical), `scan_group` puts it
+  in `overview["admin_log"]`, and `summarize_group` states it on the line
+  carrying the numbers. It used to live only in a log line, which on a stdio
+  server means a stderr no agent reads. **Absent is not `False`** in that dict:
+  a hand-built overview does not know, and claiming "service messages only"
+  there would be an assertion rather than a default.
