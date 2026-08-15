@@ -17,7 +17,7 @@ SQL-writing agent.
 
 Dev-only tooling: skill *users* never run this. It guards the source tree
 while the skill is being developed, so it lives outside the distributed
-skill (tools/, not skills/tg-analytic-skill/scripts/). Run after editing
+skill (tools/, not skills/slop-writer/scripts/). Run after editing
 either side:
 
     uv run tools/check_schema_doc.py
@@ -36,7 +36,7 @@ from slop_writer.db import FTS_SCHEMA, SCHEMA
 
 SCHEMA_MD = (
     Path(__file__).resolve().parent.parent
-    / "skills" / "tg-analytic-skill" / "references" / "schema.md"
+    / "skills" / "slop-writer" / "references" / "schema.md"
 )
 
 

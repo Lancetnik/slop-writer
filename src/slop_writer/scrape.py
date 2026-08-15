@@ -2,8 +2,13 @@
 
 Two entrypoints, one lifecycle. `scrape_posts` walks a selection window;
 `refresh_posts` re-fetches known ids. They differ only in the message-source
-adapter they hand `ingest`, and in whether the window can prove an album whole
-(see `complete_albums`).
+adapter they hand `ingest_with_client`, and in whether the window can prove an
+album whole (see `complete_albums`).
+
+Each entrypoint comes in two forms: a `*_with_client` function that takes an
+already-connected client, and a same-named session-owning shell for callers
+that have none. The connection belongs to whoever owns it - one session per
+run for a CLI, one long-lived client for a server, a fake for a test.
 
 Comments land in `group_messages` (docs/adr/0002), so the thread writer here
 goes through `group.upsert_group_messages` — one table, one writer.
@@ -619,10 +624,11 @@ async def _persist_messages(
     return post_summaries, channel_summaries
 
 
-async def ingest(
+async def ingest_with_client(
+    client: TelegramClient,
+    entity,
     channel: str,
     output_dir: Path,
-    session_file: str,
     source,
     with_comments: bool,
     with_media: bool,
@@ -630,37 +636,38 @@ async def ingest(
     window_contiguous: bool = True,
     on_progress: ProgressHook | None = None,
 ) -> ScrapeResult:
-    """Shared run lifecycle behind `scrape_posts` and `refresh_posts`.
+    """One run over an already-connected client.
 
-    Opens the DB, connects, pulls messages via `source(client, entity)`,
-    persists them, and returns the summary. The two entrypoints differ only in
+    Opens the DB, pulls messages via `source(client, entity)`, persists them,
+    and returns the summary. `scrape_posts` and `refresh_posts` differ only in
     their message-source adapter - and in `window_contiguous`, which tells
     `complete_albums` whether the ids around a group can be trusted to prove
-    the album is whole (true for a scrape window, false for arbitrary ids)."""
-    scrape_date = datetime.now(UTC).isoformat()
-    media_dir = output_dir / "media"
+    the album is whole (true for a scrape window, false for arbitrary ids).
 
-    async with channel_session(session_file, channel) as (client, entity):
-        # DB after the handle resolved: opening it first would leave an empty
-        # .tg-analytic/<typo>.db behind whenever the handle is wrong.
-        conn = open_db(output_dir, channel)
-        try:
-            raw = await source(client, entity)
-            post_summaries, channel_summaries = await _persist_messages(
-                client, entity, channel, raw, conn, media_dir,
-                scrape_date, with_comments, with_media, with_channel_info,
-                window_contiguous, on_progress,
-            )
-        finally:
-            conn.close()
+    The client is a parameter rather than something this function opens, so
+    whoever owns the connection decides its lifetime - see the module
+    docstring. Callers must have resolved the handle already: `open_db` below
+    is what would otherwise leave a stray `.tg-analytic/<typo>.db` behind."""
+    scrape_date = datetime.now(UTC).isoformat()
+    conn = open_db(output_dir, channel)
+    try:
+        raw = await source(client, entity)
+        post_summaries, channel_summaries = await _persist_messages(
+            client, entity, channel, raw, conn, output_dir / "media",
+            scrape_date, with_comments, with_media, with_channel_info,
+            window_contiguous, on_progress,
+        )
+    finally:
+        conn.close()
 
     return ScrapeResult(channel, post_summaries, channel_summaries)
 
 
-async def scrape_posts(
+async def scrape_posts_with_client(
+    client: TelegramClient,
+    entity,
     channel: str,
     output_dir: Path,
-    session_file: str,
     limit: int | None = None,
     offset_id: int = 0,
     offset_date: datetime | None = None,
@@ -701,18 +708,19 @@ async def scrape_posts(
         log.info("fetched %d messages", len(raw))
         return raw
 
-    return await ingest(
-        channel, output_dir, session_file, source,
+    return await ingest_with_client(
+        client, entity, channel, output_dir, source,
         with_comments, with_media, with_channel_info,
         window_contiguous=True, on_progress=on_progress,
     )
 
 
-async def refresh_posts(
+async def refresh_posts_with_client(
+    client: TelegramClient,
+    entity,
     channel: str,
     post_ids: list[int],
     output_dir: Path,
-    session_file: str,
     with_comments: bool = True,
     with_media: bool = True,
     with_channel_info: bool = True,
@@ -734,8 +742,54 @@ async def refresh_posts(
         log.info("resolved %d/%d post(s)", len(raw), len(post_ids))
         return raw
 
-    return await ingest(
-        channel, output_dir, session_file, source,
+    return await ingest_with_client(
+        client, entity, channel, output_dir, source,
         with_comments, with_media, with_channel_info,
         window_contiguous=False, on_progress=on_progress,
     )
+
+
+# The session-owning entrypoints. Each is its `*_with_client` twin with one
+# `channel_session` wrapped around it, and the nesting is the invariant:
+# `channel_session` resolves the handle *before* the body runs, and the body
+# is where `open_db` lives - so a typo fails with `Cannot resolve @x` instead
+# of leaving an empty `.tg-analytic/<typo>.db` behind. Keep that order when
+# adding a command.
+
+
+async def scrape_posts(
+    channel: str,
+    output_dir: Path,
+    session_file: str,
+    limit: int | None = None,
+    offset_id: int = 0,
+    offset_date: datetime | None = None,
+    latest: int | None = None,
+    with_comments: bool = True,
+    with_media: bool = True,
+    with_channel_info: bool = True,
+    on_progress: ProgressHook | None = None,
+) -> ScrapeResult:
+    async with channel_session(session_file, channel) as (client, entity):
+        return await scrape_posts_with_client(
+            client, entity, channel, output_dir,
+            limit, offset_id, offset_date, latest,
+            with_comments, with_media, with_channel_info, on_progress,
+        )
+
+
+async def refresh_posts(
+    channel: str,
+    post_ids: list[int],
+    output_dir: Path,
+    session_file: str,
+    with_comments: bool = True,
+    with_media: bool = True,
+    with_channel_info: bool = True,
+    on_progress: ProgressHook | None = None,
+) -> ScrapeResult:
+    async with channel_session(session_file, channel) as (client, entity):
+        return await refresh_posts_with_client(
+            client, entity, channel, post_ids, output_dir,
+            with_comments, with_media, with_channel_info, on_progress,
+        )

@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "slop-writer>=0.3,<0.4",
+#     "slop-writer>=0.4,<0.5",
 #     "python-dotenv>=1.0",
 #     "typer>=0.12,<1",
 # ]

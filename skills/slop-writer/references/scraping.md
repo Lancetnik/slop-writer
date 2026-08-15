@@ -6,7 +6,7 @@ Every command below runs from the **project root**:
 uv run <skill_dir>/scripts/tg_scrape.py <command> --channel @name [flags]
 ```
 
-All of them need the session from `/setup-tg-analytic`. Results land in
+All of them need the session `slop-writer init` writes. Results land in
 `.tg-analytic/<channel>.db` (leading `@` stripped) and each run prints a
 Markdown summary — paste that, don't paraphrase it.
 

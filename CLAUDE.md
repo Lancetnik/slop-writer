@@ -1,12 +1,18 @@
-# tg-scraper / tg-analytic-skill
+# tg-scraper / slop-writer
 
 A Claude Code **skill** that analyzes a Telegram channel (the author's own
 [@fastnewsdev](https://t.me/fastnewsdev)). Not an app — a bundled CLI the skill
-drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
+drives. **Two install channels** (#21), both serving `skills/slop-writer/` from
+this repository: `uv tool install slop-writer` + `slop-writer install` (which
+copies the skill out of the wheel), and `npx skills@latest add ...`. No drift
+detection — one version covers package and skill, and the last writer wins on
+disk.
 
 ## Layout
 
-- `skills/tg-analytic-skill/` — the skill itself (read-only when installed).
+- `skills/slop-writer/` — the skill itself (read-only when installed). The
+  directory name matches the distribution, and both channels write
+  `.claude/skills/slop-writer/`, so a project never ends up with two copies.
   - `SKILL.md` — a **router**, not a manual (docs/adr/0005): the invariants every
     branch needs plus a table pointing at the per-CLI reference. Command flags
     belong in `references/`, so a new command usually edits a reference and
@@ -25,16 +31,15 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   - `references/markup.md` — supported Markdown→Telegram markup for
     `tg_publish.py`; read before writing a post body. Reached via
     `publishing.md`.
-- `skills/setup-tg-analytic/` — second, **user-invoked** skill
-  (`disable-model-invocation: true`): collects credentials, writes
-  `.tg-analytic/.env`, hands the TTY login to the user. The CLIs name it in
-  their missing-credentials/session errors, so the agent knows to stop and ask
-  rather than attempt an interactive login.
+  There is **no second skill**: `setup-tg-analytic` was deleted by #20 and its
+  whole job is `slop-writer init`. Nothing replaced it — the server's
+  `NO_CREDENTIALS`/`NO_SESSION` hint is the mechanism, and the agent relays it.
+  A thin "setup skill" would recreate the deleted one under a new name.
 - `src/slop_writer/` — the **library, and now the shipped server**, published
   to PyPI as `slop-writer`. It holds the domain logic; the scripts are argument
   parsing and output rendering, nothing else, which is what lets `server.py` be
   a *second caller* of the same functions rather than a rewrite. The scripts
-  name it in their PEP-723 headers (`slop-writer>=0.3,<0.4`), so `uv run`
+  name it in their PEP-723 headers (`slop-writer>=0.4,<0.5`), so `uv run`
   fetches it from the index; nothing is vendored into the skill directory.
   Modules import each other relatively (`from .db import …`).
   - `db.py` — paths, the `SCHEMA` + `FTS_SCHEMA` constants (**source of truth**
@@ -55,7 +60,8 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     `count_reactions`, `sender_fields`, `group_albums`, `tme_link`). No DB, no
     network, so `scrape` and `group` share it without importing each other.
   - `scrape.py` — the post pipeline: `scrape_posts` / `refresh_posts` over one
-    `ingest` lifecycle, album completion, and the `posts`/`post_metrics` writes.
+    `ingest_with_client` lifecycle, album completion, and the
+    `posts`/`post_metrics` writes.
   - `group.py` — the discussion group: service/admin-log classification, thread
     linkage, the `group_messages`/`group_events` writers, and `scan_group`.
     Imports Telethon (the stdlib-only property went with 0.2.0 — one flat
@@ -79,8 +85,15 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     `WRITE_TOOLS` / `permission_rules()` are the read/write split written down
     for `install` to copy. Argument parsing and rendering only; no Telegram
     logic.
+  - `install.py` — `install` / `uninstall`: the **agent wiring** (#19). Knows
+    about MCP clients and nothing about Telegram — no secrets, no TTY, no
+    network. Copies `server.permission_rules()` rather than restating it.
+  - `init.py` — `init`: the **Telegram state** (#19). Knows about credentials
+    and sessions and nothing about MCP clients. No `input()` — prompting lives
+    in `cli.py`, which owns the TTY, so these stay testable without one.
   - `cli.py` — the `slop-writer` console script (argparse, not typer). Decides
-    the project root — from cwd, or `--project` — and loads `.env`.
+    the project root — from cwd, or `--project` — and loads `.env`. The only
+    module in the package that prompts, prints, or catches `SlopWriterError`.
   - `markdown.py` — `publish.py` only: walks mistune's Markdown AST straight
     to Telethon `MessageEntity` objects (no HTML, no sulguk). Tables render as
     monospace `pre`; UTF-16 offset accounting lives here.
@@ -97,7 +110,18 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
     Recorded fixtures were rejected — they pin a wire format the `<2` pin
     already expects to move. One quirk the factories hide: `Message.text` is a
     property returning `None` until assigned, and every `msg.text or ""` in
-    the package depends on it.
+    the package depends on it. `FakeClient` is the whole network boundary
+    (`iter_messages` honouring `reverse`/`limit`/`offset_id`, `get_messages`,
+    `get_entity`, `download_media`, and `__call__` for the three raw TL
+    requests); replies the domain reads through plain `getattr` are duck-typed
+    (`FullChannel`, `AdminLogPage`, `Named`), the ones it `isinstance`-checks
+    are real (`Channel`, `User`, `PublicForwardMessage`).
+  - `test_ingest.py` / `test_group_scan.py` cover the *lifecycles* — the part
+    that orders the units. They call the `*_with_client` functions with a
+    `FakeClient` and a real SQLite file under `tmp_path`, and assert on DB rows
+    and the returned `ScrapeResult`/`GroupScanResult`. `fake_session` exists
+    for exactly one test: that `scrape_posts` resolves the handle before its
+    body opens the DB.
   - `test_server.py` builds a real `FastMCP` over a `tmp_path` root and asks
     it questions — the roster, `outputSchema` absence, the `ask`-rules-vs-tool
     -names comparison, and the write tools' failures up to (never past) the
@@ -132,8 +156,10 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   checkout* (`[tool.uv.sources]`, editable), never to the released version —
   a guard reading the published schema would pass while the tree disagrees.
   It stays a standalone script rather than becoming a test: its subject is a
-  document under `skills/` that the package doesn't ship, and its editable pin
-  is a different resolution from the suite's. CI runs it as its own step.
+  document rather than a function, and its editable pin is a different
+  resolution from the suite's. CI runs it as its own step. (The older reason —
+  "a document the package doesn't ship" — expired with #20: the wheel now
+  carries `skills/` so `install` can copy it out.)
 - `.tg-analytic/` — **runtime state at the project root** (cwd), gitignored:
   `.env`, `session.session`, one `<channel>.db` per channel, `media/`. The
   **entrypoints** anchor this on `Path.cwd()` (`PROJECT_ROOT` at the top of
@@ -171,13 +197,24 @@ drives. Distributed via the `skills` npm CLI (`npx skills@latest add ...`).
   `FastMCP` elsewhere. **python-dotenv** is a package dependency again as of
   0.3.0: `serve` decides the project root, so it is one of the callers that
   populates the environment `tg.py` reads.
+- **Wheel data** — `[tool.uv.build-backend] data = { purelib = "skills" }`
+  ships `skills/slop-writer/` *beside* the package in site-packages, which is
+  how `install` copies it out. It cannot live under `src/slop_writer/`: the
+  same directory is what `npx skills add` serves from the repository root, and
+  uv_build packs only files under the module root — a symlink into `skills/`
+  fails the build outright. `install.skill_source()` tries the source checkout
+  **first**, because an editable install materialises the data directory once
+  at sync time and never refreshes it when a skill file is edited.
 
 ## slop-writer commands
 
-The shipped console script. `install` / `init` arrive with #20.
+The shipped console script.
 
 | Command | Does | Needs |
 | --- | --- | --- |
+| `install` | wire this project's Claude Code config: the path-free `.mcp.json` entry, the permission block, the skill into `.claude/skills/slop-writer/`, the `CLAUDE.md` address block | nothing — no Telegram, no network |
+| `init` | Telegram credentials → `.tg-analytic/.env`, gitignore, and the TTY login | a real terminal (the user runs it) |
+| `uninstall` | remove exactly what `install` wrote; **never** `.tg-analytic/` | — |
 | `serve --mcp` | run the MCP server over stdio; `--project PATH` overrides the cwd-derived project root | launched by the MCP client, not by hand |
 
 ## MCP tools
@@ -235,6 +272,28 @@ Non-obvious, and enforced in `server.py`:
 - Server `instructions` stay **empty** (#21): they are always in context, so
   domain knowledge belongs in the skill.
 
+## Releases
+
+**A release tag is `vMAJOR.MINOR.PATCH` — nothing else.** `v2.0.0`, `v0.2.1`.
+All three components, always the `v` prefix, no suffix, no two-component form
+(`v2.1` is **not** a release tag), no bare `2.0.0`.
+
+- The tag must equal `v` + the `version` in `pyproject.toml`, which stays the
+  single place a version is declared (`slop_writer.__version__` reads it back
+  from the installed distribution metadata). One version covers package **and**
+  skill — #21 accepted the drift that buys.
+- `publish.yaml` gates a release on tag-vs-`pyproject` agreement, but it strips
+  the `v` with `${GITHUB_REF_NAME#v}`, so it accepts a bare `2.0.0` and would
+  accept `v2.1` if `pyproject` said `2.1`. **The naming rule is a convention
+  the gate does not enforce** — a job wanting to enforce it needs its own
+  `case "$GITHUB_REF_NAME" in v[0-9]*.[0-9]*.[0-9]*)` check.
+- PyPI versions are immutable, so a wrong tag is unfixable after upload. Check
+  the tag before publishing the release, not after.
+- Note `v2.1` on the remote: a stray tag on a pre-package commit (`e17f826`),
+  with no release attached and ahead of the real `v0.0.1 → v0.1.0 → v0.2.0`
+  line. It is exactly the shape this rule forbids. Deleting a published tag is
+  the owner's call, not an agent's.
+
 ## tg_scrape.py commands
 
 | Command | Does | Needs |
@@ -276,10 +335,23 @@ Scrape selection flags are mutually exclusive; default to `--latest N`
   This is what lets the MCP server call the same function and build a JSON
   payload instead. `code` is the #15 vocabulary, and is `None` at the raise
   sites that vocabulary doesn't name yet.
+- **The domain uses a client, the entrypoint owns it.** The scrape and scan
+  paths come in twins: `X_with_client(client, …)` does the work,
+  `X(…, session_file)` is the same call with one `channel_session` wrapped
+  around it (`scrape_posts`, `refresh_posts`, `scan_group` — the CLIs' public
+  signatures, unchanged). A server holding one long-lived client calls the
+  `_with_client` form and never pays for a login per request; a test hands
+  over a fake and no session exists at all. Other paths (`stats`, `scheduled`,
+  `publish`) still open their own session — they get the same split when a
+  caller needs it, not before. A **new command adds both forms.**
 - Handles resolve through `resolve_peer` **before** any `open_db` call, so a
   typo exits 1 with `Cannot resolve @x` instead of a raw Telethon traceback
   plus a stray empty `.tg-analytic/<typo>.db`. Keep that order when adding a
   command; zero scraped posts then means an empty window, never a bad handle.
+  The nesting *is* the invariant: `open_db` lives inside the `channel_session`
+  body. For the group scan it lives one level lower — inside
+  `scan_group_with_client`, after `resolve_group_target`, because a channel's
+  *linked* group is not the channel and only the scan knows which to open.
 - `post_metrics` is **append-only** — use `MAX(id)` for "latest snapshot", not
   `MAX(scrape_date)`. See the canonical CTE in `references/schema.md`.
 - **One album = one `posts` row.** A selection window can start inside an album,

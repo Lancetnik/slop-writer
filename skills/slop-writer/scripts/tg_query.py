@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "slop-writer>=0.3,<0.4",
+#     "slop-writer>=0.4,<0.5",
 # ]
 # ///
 """Query-side CLI: parse arguments, run one read-only query, print a table.
