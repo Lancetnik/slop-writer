@@ -134,14 +134,15 @@ lives in a PEP 735 `dev` group, never an extra.
 
 ## Releases
 
-**A release tag is `vMAJOR.MINOR.PATCH` — nothing else**, equal to `v` + the
-`version` in `pyproject.toml`. **A bump is a two-file edit**: `pyproject.toml`
-and `SKILL.md`'s `metadata.version`, byte-identical, three components — the
-`npx skills add` channel never sees `pyproject.toml`, and
-`tests/test_packaging.py` pins the copy to the source. `publish.yaml` gates on
-tag-vs-`pyproject` agreement but strips the `v`, so the naming rule is a
-convention the gate does not enforce. PyPI versions are immutable: check the tag
-before publishing, not after.
+**One version string in four places**: `pyproject.toml`'s `version` (the
+source), `SKILL.md`'s `metadata.version`, the git tag (`v` + it), and the
+GitHub release title (the tag verbatim, `v0.4.1`) — three components
+throughout, with the release's prose kept to its notes.
+
+`tests/test_packaging.py` pins the skill's copy to the source, which it needs
+because the `npx skills add` channel never sees `pyproject.toml`. Tag and title
+rest on this convention alone: `publish.yaml` compares them with the `v`
+stripped. PyPI versions are immutable, so check the tag before publishing.
 
 ## Dev CLIs (`tools/tg_*.py`)
 
