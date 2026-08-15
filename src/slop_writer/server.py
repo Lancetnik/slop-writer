@@ -364,9 +364,10 @@ def build_server(project_root: Path) -> FastMCP:
             "for the N newest posts (the default and the usual choice), or "
             "`{\"mode\": \"window\", \"offset_id\": …, \"limit\": …}` to page "
             "forward through history.\n"
-            "`media=false` skips downloading images — seconds instead of "
-            "minutes on a re-scrape. `comments=false` skips comment threads "
-            "for a metrics-only pass. Re-scraping is safe: rows are upserted."
+            "`media=false` skips image downloads and `comments=false` skips "
+            "comment threads — either cuts a slow pass. A cold or wide window "
+            "runs to minutes and may finish in the background; wait for it "
+            "rather than re-issuing. Re-scraping is safe: rows are upserted."
         ),
     )
     async def scrape_posts(
