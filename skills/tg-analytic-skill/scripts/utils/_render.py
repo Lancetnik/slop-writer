@@ -320,25 +320,6 @@ def summarize_views(
         print(f"- {hour:02d}:00 | {int(value):,} views ({value / total * 100:.1f}%)")
 
 
-def _local_hour(iso: str | None) -> int | None:
-    """Hour-of-day in the machine's local timezone (stored dates are UTC)."""
-    if not iso:
-        return None
-    try:
-        dt = datetime.fromisoformat(iso)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone().hour
-
-
-def _local_tz_label() -> str:
-    """e.g. 'UTC+03:00' — labels the hour table so it's not misread as UTC."""
-    offset = datetime.now(UTC).astimezone().strftime("%z")
-    return f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
-
-
 def _via_breakdown(events: list[dict], kind: str) -> str:
     counts = Counter(e.get("via") or "?" for e in events if e["kind"] == kind)
     total = sum(counts.values())
@@ -400,31 +381,27 @@ def summarize_group(
             c = by_day[day]
             print(f"| {day} | {c['join']} | {c['leave']} |")
 
-    # Hour-of-day profile: all days aggregated, machine-local tz. Three
-    # aligned signals so spikes can be compared at a glance.
-    joins_h: Counter = Counter()
-    msgs_h: Counter = Counter()
-    authors_h: dict[int, set] = {}
-    for e in joins:
-        if (h := _local_hour(e.get("date"))) is not None:
-            joins_h[h] += 1
-    for m in own:
-        if (h := _local_hour(m.get("date"))) is not None:
-            msgs_h[h] += 1
-            authors_h.setdefault(h, set()).add(m.get("author"))
-
     if threads and not overview.get("standalone"):
         print(f"\n## Threads in window ({len(threads)})\n")
         print("| Post | Replies | Commenters | First reply | Snippet |")
         print("|------|--------:|-----------:|-------------|---------|")
+        unscraped = False
         for t in sorted(threads, key=lambda t: t["replies"], reverse=True):
             first = t.get("first_reply_minutes")
             first_str = f"{first:.0f}m" if first is not None else "—"
-            # A thread whose channel post was deleted has no link — label it
-            # instead of printing a bare id.
-            post = t["post_link"] or f"post {t['post_id']} (deleted)"
+            # `post_link` is always set; `scraped` says whether a `posts` row
+            # backs it. Missing rows are the norm for posts newer than the
+            # last `scrape`, so the marker points at the fix instead of
+            # guessing the post is gone.
+            post = t["post_link"]
+            if not t.get("scraped"):
+                post = f"{post} ⚠"
+                unscraped = True
             print(f"| {post} | {t['replies']} "
                   f"| {t['commenters']} | {first_str} | {_md_cell(t.get('snippet'))} |")
+        if unscraped:
+            print("\n⚠ — no `posts` row yet, so date and snippet are blank. "
+                  "Run `fetch` on those ids to fill them in.")
 
     if own:
         print("\n## Engagement\n")

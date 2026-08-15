@@ -1363,10 +1363,15 @@ def _group_message_row(msg: Message, root_map: dict[int, int]) -> tuple:
 
 
 def _load_thread_stats(
-    conn: sqlite3.Connection, lo: int, hi: int
+    conn: sqlite3.Connection, lo: int, hi: int, channel: str
 ) -> list[dict]:
     """Per-thread stats for threads touched in the scanned id window,
-    joined to posts for snippet/link and time-to-first-reply."""
+    joined to posts for snippet/link and time-to-first-reply.
+
+    The join is a LEFT JOIN: `group` reaches threads on posts that `scrape`
+    has not stored yet, so `p.link` is NULL for them. The link is built from
+    the channel handle instead — reachable whether or not the post is in the
+    DB — and `scraped` carries the distinction."""
     rows = conn.execute(
         """
         SELECT gm.thread_post_id, p.link, substr(COALESCE(p.text, ''), 1, 80),
@@ -1395,7 +1400,8 @@ def _load_thread_stats(
         threads.append(
             {
                 "post_id": post_id,
-                "post_link": link,
+                "post_link": link or tme_link(channel, post_id),
+                "scraped": link is not None,
                 "snippet": snippet,
                 "replies": replies,
                 "commenters": commenters,
@@ -1509,7 +1515,7 @@ async def scan_group(
                 (min(scanned_ids), max(scanned_ids)) if scanned_ids else (0, 0)
             )
             threads = (
-                _load_thread_stats(conn, lo, hi)
+                _load_thread_stats(conn, lo, hi, handle)
                 if target.channel_id is not None
                 else []
             )

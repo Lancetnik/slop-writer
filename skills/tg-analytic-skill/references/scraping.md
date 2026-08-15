@@ -120,13 +120,18 @@ Completeness caveat: without admin rights the event counts are what the scan
 *found*, not the truth. Cross-check the `group_metrics.members` trend before
 claiming totals — Telegram's own member count can lag a burst by hours.
 
-The summary prints joins/leaves by mechanism and by day, an hour-of-day
-activity table (joins / messages / unique authors, in the **machine-local**
-timezone — it is labeled; don't re-report those hours as UTC), every thread
-touched in the window (replies, unique commenters, time-to-first-reply), and
-top contributors. CTA attribution ("did post #X's invite work?") is
-deliberately not pre-computed — use the canonical query in [schema.md](schema.md)
-with the user's chosen window.
+The summary prints joins/leaves by mechanism and by day, every thread touched
+in the window (replies, unique commenters, time-to-first-reply), and top
+contributors. A thread marked `⚠` has no `posts` row yet — normal for a post
+newer than the last `scrape`; its link still works, and `fetch` on that id
+fills in the date and snippet.
+
+Two questions the summary deliberately leaves to a query, because both need a
+window the command doesn't know: CTA attribution ("did post #X's invite
+work?") and the hour-of-day activity profile. One `group` run covers only the
+messages you asked for — and joins only for the admin log's ~48h — so both
+answers come from the accumulated DB. [schema.md](schema.md) carries the
+canonical query for each.
 
 ## `subscribers` — audience growth and churn
 
