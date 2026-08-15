@@ -11,8 +11,9 @@ channel:
 - Pull subscriber growth/churn broken down by acquisition source and views by hour of day for the "best time to post" question.
 - Schedule, retime, and rewrite future posts — the one write path.
 
-Backed by Telethon, with a separate read-only SQL CLI for querying the local
-SQLite DB (one file per channel).
+Backed by Telethon. Everything reaches the agent as **MCP tools** — eleven of
+them, over a local SQLite DB (one file per channel) that a read-only SQL tool
+answers questions from.
 
 > This is my personal skill — I built it to manage my own channel,
 > [**@fastnewsdev**](https://t.me/fastnewsdev). It's shared here in case the
@@ -78,26 +79,30 @@ Inside Claude Code, ask in plain language:
 > How did the discussion group grow after Tuesday's post?
 > Schedule this draft for Friday at 18:00.
 
-The skill picks the command, runs it from the project root, and pastes back the
-Markdown summary each command prints (top posts by views and reactions, top
-tags, outward forwarders and inward citations with their post ids) — usually
-the answer is right there without dropping into SQL.
+The skill picks the tool, and the tool returns a Markdown summary the agent
+pastes back (top posts by views and reactions, top tags, outward forwarders and
+inward citations with their post ids) — usually the answer is right there
+without dropping into SQL.
 
 ### Keeping the metric history usable
 
-`post_metrics` is a time series, but only of the moments you actually scraped — it cannot be backfilled. A routine `scrape --latest N` re-measures recent posts only, so an older post can sit on the single snapshot it got on its first day forever, and any "how did this post do over time" question then has nothing to answer from. Every so often, run `fetch` over a spread of older ids as well:
+`post_metrics` is a time series, but only of the moments you actually scraped —
+it cannot be backfilled. A routine scrape of the latest N posts re-measures
+recent posts only, so an older post can sit on the single snapshot it got on
+its first day forever, and any "how did this post do over time" question then
+has nothing to answer from. Every so often, ask for a refresh over a spread of
+older post ids as well:
 
-```bash
-uv run "$SKILL/scripts/tg_scrape.py" fetch --channel @yourchannel 340 345 350 355
-```
+> Refresh metrics on posts 340, 345, 350 and 355 of @yourchannel.
 
-Views in particular keep climbing for months, so a post's snapshots are worth collecting long after it stops feeling current.
+Views in particular keep climbing for months, so a post's snapshots are worth
+collecting long after it stops feeling current.
 
-To drive the CLIs by hand, the full command reference lives in the skill:
+The skill's own files, if you want to read what the agent reads:
 
-- [`references/scraping.md`](./skills/slop-writer/references/scraping.md) — `tg_scrape.py`: `scrape`, `fetch`, `group`, `subscribers`, `views`
-- [`references/querying.md`](./skills/slop-writer/references/querying.md) — `tg_query.py` and full-text search, over [`references/schema.md`](./skills/slop-writer/references/schema.md)
-- [`references/publishing.md`](./skills/slop-writer/references/publishing.md) — `tg_publish.py`: `schedule`, `reschedule`, `edit`, plus [`references/markup.md`](./skills/slop-writer/references/markup.md)
+- [`SKILL.md`](./skills/slop-writer/SKILL.md) — which tool answers which question, and the four invariants that break an answer silently
+- [`references/analysis.md`](./skills/slop-writer/references/analysis.md) — what the numbers mean and how they mislead, over [`references/schema.md`](./skills/slop-writer/references/schema.md)
+- [`references/publishing.md`](./skills/slop-writer/references/publishing.md) — the write discipline and queue semantics, plus [`references/markup.md`](./skills/slop-writer/references/markup.md)
 
 ## Repository layout
 
@@ -106,23 +111,17 @@ skills/
   slop-writer/        Shipped both ways: packaged into the wheel (so
                       `slop-writer install` can copy it out) and served to
                       `npx skills add` from here. One directory, one version.
-    SKILL.md          Skill instructions: the branch map, not the flags.
-    scripts/
-      tg_scrape.py           Telethon read CLI (scrape, fetch, group, subscribers, views, scheduled).
-      tg_publish.py          Telethon write CLI (schedule, reschedule, edit).
-      tg_query.py            Read-only SQL CLI.
+    SKILL.md          Which tool answers which question, and the invariants.
     references/
-      scraping.md     tg_scrape.py commands and selection flags.
-      querying.md     tg_query.py usage and search patterns.
-      publishing.md   tg_publish.py commands and scheduling rules.
+      analysis.md     What the numbers mean, and how they mislead.
+      publishing.md   Write discipline and scheduled-queue semantics.
       schema.md       DB schema reference for writing SQL.
-      markup.md       Supported Markdown -> Telegram markup for tg_publish.
+      markup.md       Supported Markdown -> Telegram markup for post bodies.
 src/
-  slop_writer/        The library the CLIs import, published to PyPI. It holds
-                      the domain logic; the three scripts above are argument
-                      parsing and output rendering over it. They declare
-                      `slop-writer` in their PEP-723 headers, so `uv run`
-                      fetches it — nothing is vendored into the skill directory.
+  slop_writer/        The library and the shipped server, published to PyPI. It
+                      holds the domain logic; `server.py` and the dev CLIs in
+                      `tools/` are argument parsing and output rendering over
+                      it — two callers of one set of functions.
     db.py             DB schema (source of truth), paths, open helpers. Stdlib only.
     errors.py         SlopWriterError/UsageError — what the domain raises. Stdlib only.
     query.py          Read-only SQL guards and execution. Stdlib only.
@@ -139,10 +138,15 @@ src/
     install.py        `install`/`uninstall`: the agent wiring. No Telegram.
     init.py           `init`: credentials, gitignore, the TTY login. No MCP.
     cli.py            The `slop-writer` console script (argparse).
-tools/
-  check_schema_doc.py  Dev-only: guard SCHEMA <-> references/schema.md drift (not
-                       shipped). Pinned to this checkout, not to the released
-                       package, so it guards the working tree.
+tools/               Dev-only, never shipped to users.
+  check_schema_doc.py  Guard SCHEMA <-> references/schema.md drift. Pinned to
+                       this checkout, not to the released package, so it guards
+                       the working tree.
+  tg_scrape.py         The old read CLI (scrape, fetch, group, subscribers,
+  tg_publish.py        views, scheduled), write CLI and SQL CLI. Undocumented
+  tg_query.py          and unsupported: the MCP tools are the surface now.
+                       Kept because `login` needs a TTY and because they are
+                       the only way to exercise Telethon without a client.
 ```
 
 Runtime state (`.env`, the Telethon session, per-channel `*.db` files, media)

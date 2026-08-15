@@ -1,8 +1,10 @@
 # tg-scraper / slop-writer
 
-A Claude Code **skill** that analyzes a Telegram channel (the author's own
-[@fastnewsdev](https://t.me/fastnewsdev)). Not an app — a bundled CLI the skill
-drives. **Two install channels** (#21), both serving `skills/slop-writer/` from
+A Claude Code **skill plus an MCP server** that analyze a Telegram channel (the
+author's own [@fastnewsdev](https://t.me/fastnewsdev)). The server's eleven
+tools are the whole agent-facing surface; the skill says which tool answers
+which question and what the numbers mean. **Two install channels** (#21), both
+serving `skills/slop-writer/` from
 this repository: `uv tool install slop-writer` + `slop-writer install` (which
 copies the skill out of the wheel), and `npx skills@latest add ...`. No drift
 detection — one version covers package and skill, and the last writer wins on
@@ -13,24 +15,28 @@ disk.
 - `skills/slop-writer/` — the skill itself (read-only when installed). The
   directory name matches the distribution, and both channels write
   `.claude/skills/slop-writer/`, so a project never ends up with two copies.
-  - `SKILL.md` — a **router**, not a manual (docs/adr/0005): the invariants every
-    branch needs plus a table pointing at the per-CLI reference. Command flags
-    belong in `references/`, so a new command usually edits a reference and
-    leaves `SKILL.md` alone.
-  - `scripts/tg_scrape.py` — the Telegram-facing **read** CLI (Telethon).
-  - `scripts/tg_publish.py` — the Telegram-facing **write** CLI: publish paths
-    (`schedule`/`reschedule`/`edit`). Isolated from the read scripts on purpose
-    (docs/adr/0003).
-  - `scripts/tg_query.py` — read-only SQL CLI over the per-channel SQLite DB.
-  - `references/scraping.md` / `querying.md` / `publishing.md` — one per CLI,
-    each the target of one row in `SKILL.md`'s branch table: flags, worked
-    examples, and that CLI's failure modes co-located with the command they
-    hit.
+  **Five files, no `scripts/`** (#21, #30). The seam that decides what goes
+  where is *description = how to call, skill = what it means*, and it is
+  checkable in both directions: **no metric fact in a tool description, no
+  argument name in the skill.** A new tool therefore edits `server.py` and
+  usually nothing here; a new *invariant* edits here and not `server.py`.
+  - `SKILL.md` — the **router** (docs/adr/0005, second iteration): a table from
+    question → tool, the three confusable tool pairs spelled out, and the four
+    invariants that break an answer silently (scrape-before-query, the
+    newest-first bias, one-album-one-post, append-only metrics). It absorbed
+    the separate `tools.md` #15 planned — with the CLI mechanics gone to the
+    server, a router pointing at another router had nothing left in it.
+  - `references/analysis.md` — metric *semantics*: the clauses that decide
+    whether a number is true, the cumulative-snapshot traps, group-scan
+    completeness (the admin log's ~48h retention), and who is who in the group.
+    Was `querying.md`; the SQL mechanics went to the `run_query` description.
   - `references/schema.md` — restates `SCHEMA` for the SQL-writing agent; read
-    before writing SQL. Reached via `querying.md`.
-  - `references/markup.md` — supported Markdown→Telegram markup for
-    `tg_publish.py`; read before writing a post body. Reached via
-    `publishing.md`.
+    before writing SQL. Reached via `analysis.md`.
+  - `references/publishing.md` — the write discipline and the scheduled queue's
+    semantics (its ids are not post ids, its times are UTC, why the 1h floor
+    has no override). Reached from `SKILL.md`.
+  - `references/markup.md` — supported Markdown→Telegram markup for a post
+    body. Reached via `publishing.md`.
   There is **no second skill**: `setup-tg-analytic` was deleted by #20 and its
   whole job is `slop-writer init`. Nothing replaced it — the server's
   `NO_CREDENTIALS`/`NO_SESSION` hint is the mechanism, and the agent relays it.
@@ -147,6 +153,9 @@ disk.
   resolution from the suite's. CI runs it as its own step. (The older reason —
   "a document the package doesn't ship" — expired with #20: the wheel now
   carries `skills/` so `install` can copy it out.)
+- `tools/tg_scrape.py`, `tools/tg_publish.py`, `tools/tg_query.py` — the
+  original CLIs, **dev-only** since #30 and sharing `tools/`'s "not shipped"
+  property with the guard above. See *The dev CLIs* below.
 - `.tg-analytic/` — **runtime state at the project root** (cwd), gitignored:
   `.env`, `session.session`, one `<channel>.db` per channel, `media/`. The
   **entrypoints** anchor this on `Path.cwd()` (`PROJECT_ROOT` at the top of
@@ -281,38 +290,27 @@ All three components, always the `v` prefix, no suffix, no two-component form
   line. It is exactly the shape this rule forbids. Deleting a published tag is
   the owner's call, not an agent's.
 
-## tg_scrape.py commands
+## The dev CLIs (`tools/tg_*.py`)
 
-| Command | Does | Needs |
-| --- | --- | --- |
-| `login` | one-time interactive auth → writes session | TTY (user runs it) |
-| `scrape` | posts + comments + media + forwarders → DB; appends a `post_metrics` row per run | session |
-| `fetch <ids>` | refresh specific post ids (one round-trip, no scan) | session |
-| `group` | discussion-group messages + threads + join/leave events → DB; appends a `group_metrics` row per run | membership in the group (`--channel @chan` for the linked group, or `--group @grp` standalone) |
-| `subscribers` | growth/churn by source from stats API | **admin** + ~500+ subs |
-| `views` | views per hour of day | **admin** + stats-eligible |
-| `scheduled` | list not-yet-published posts (console-only, no DB) | **post rights** |
+`tg_scrape.py` (`login`, `scrape`, `fetch`, `group`, `subscribers`, `views`,
+`scheduled`), `tg_publish.py` (`schedule`, `reschedule`, `edit`) and
+`tg_query.py` are PEP-723 scripts, kept as **dev tools only**. #30 moved them
+out of `skills/slop-writer/` — the skill ships five files and the wheel would
+otherwise post three undocumented CLIs into every user's skill directory.
 
-## tg_publish.py commands
+They are **undocumented and unsupported**: nothing under `skills/` mentions a
+script name or a flag, and the acceptance check for that is a `grep`. Two
+reasons they survive at all — `login` needs a TTY that `slop-writer init` now
+also provides, and they are the only way to drive Telethon without an MCP
+client. Their flags are `--help`; do not restore a reference file for them.
 
-| Command | Does | Needs |
-| --- | --- | --- |
-| `schedule` | queue a Markdown post (body from `--file` or stdin) to publish at `--at`; Markdown→Telethon entities via `slop_writer.markdown`; `--photo` (repeatable, ≤10 → album) attaches images, body becomes the caption (may be empty; length caps enforced by Telegram — 1024/2048 Premium — not the CLI); `--caption-above` puts it on top via an `invert_media` monkey patch (Telethon v1 won't expose it, see #4410); prints confirmation, no DB write | **post rights** + session |
-| `reschedule` | move scheduled post `--id` to a new `--at` (body unchanged); re-applies the 1h floor | **post rights** + session |
-| `edit` | replace scheduled post `--id`'s body (from `--file` or stdin, time unchanged); **no** floor check | **post rights** + session |
-
-`--id` is the `sched-msg` id from `tg_scrape.py scheduled`. `--at` is ISO-8601
-**with offset** (naive rejected); the now+1h floor is a hardcoded `MIN_LEAD`
-constant with no CLI/env override — the guard exists so the agent can't
-schedule too soon (docs/adr/0003). `reschedule`/`edit` are `editMessage` with
-`schedule_date`; Telethon returns `None` for scheduled edits, so the commands
-report from known inputs, not the call result. The body (`schedule`/`edit`)
-comes from `--file PATH` or stdin (`--file -`, or omit it); pipe a quoted
-heredoc to publish a draft's clean body without writing a temp file (the CLI
-strips no metainfo — pass only the body).
-
-Scrape selection flags are mutually exclusive; default to `--latest N`
-(newest-first), never bare `--limit N` (walks oldest-first from msg 1).
+`--at` is ISO-8601 **with offset** (naive rejected); the now+1h floor is a
+hardcoded `MIN_LEAD` in `publish.py`, shared with the tools, with no override —
+the guard exists so the agent can't schedule too soon (docs/adr/0003).
+`reschedule`/`edit` are `editMessage` with `schedule_date`; Telethon returns
+`None` for scheduled edits, so both callers report from known inputs, not from
+the call result. `--caption-above` rides an `invert_media` monkey patch
+(Telethon v1 won't expose it, see #4410).
 
 ## Key architecture facts (non-obvious)
 

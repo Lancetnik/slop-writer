@@ -1,94 +1,78 @@
-# Publishing — `tg_publish.py` (+ `scheduled`)
+# Publishing
 
-The only commands that write to Telegram. They need **post rights** on the
-channel and the same session as the read commands. Nothing is persisted to the
-DB: scheduled ids differ from the ids a post gets once published, and carry no
-engagement yet — so the queue lives in Telegram alone, and `scheduled` is the only way to read it. `tg_query.py` never sees a future post.
+`publish_schedule`, `publish_reschedule` and `publish_edit` are the only tools
+that write to Telegram. They need post rights on the channel. Read
+[markup.md](markup.md) before writing a post body.
 
-These commands reach a live channel. Show the user the exact body and the exact `--at`, get their go-ahead, then run the command.
+## The discipline
 
-Read [markup.md](markup.md) before writing a post body — it lists the Markdown
-that survives the trip to Telegram entities.
+These reach a live channel, and a scheduled post publishes itself whether or
+not anyone looks at it again.
 
-## See what is queued — `scheduled`
+- Publish only on an **explicit instruction** from the user. "Draft me a post"
+  is not one; neither is "that looks good".
+- Show the **exact body** and the **exact time**, in the user's own timezone,
+  and get their go-ahead before the call.
+- The user's client prompts on every `publish_*` call. That prompt is a
+  backstop against a mistake, not the agreement — do not treat clicking it as
+  the confirmation you were supposed to ask for.
+- After writing, **verify with `list_scheduled`**. Telegram returns nothing
+  useful from an edit to a scheduled message, so the confirmation you get back
+  is assembled from what was sent, not from what Telegram stored. It is a
+  receipt for the request, not proof of the result.
 
-```
-uv run <skill_dir>/scripts/tg_scrape.py scheduled --channel @name
-```
+## The queue is not in the database
 
-Lists the channel's scheduled posts soonest-first: an `## Overview` (count +
-UTC window) and a numbered `## Queue`, each entry headed by the scheduled time,
-a relative delta (`in ~17h` / `overdue 10m`) and the `sched-msg #` id, then the
-full body as a blockquote plus attachments. That `sched-msg` id is the `--id`
-for `reschedule` and `edit`; it is stable across an edit. Console output only.
+Scheduled posts live in Telegram alone. Nothing about them is stored locally,
+`run_query` cannot see them, and no analytics question touches them — they
+have no engagement yet.
 
-**Every time in that listing is UTC**, including the per-entry headings, while people keep their plans in local time. Convert to the user's timezone when you report the queue, and say which timezone you converted to.
+Their ids are their own species. The id `list_scheduled` reports identifies a
+post *in the queue*; it survives an edit and a reschedule, and it is **not**
+the id the post gets once it publishes. Never carry one into an analytics
+query, and never pass a published post's id to a publish tool.
 
-## Queue a post — `schedule`
+## Times
 
-```
-uv run <skill_dir>/scripts/tg_publish.py schedule --channel @name \
-  --file post.md --at 2026-06-27T18:00:00+03:00
-```
+`list_scheduled` reports **UTC throughout**, including each entry's own
+heading. People hold their plans in local time, so convert before reporting
+the queue and say which timezone you converted to.
 
-The body comes from `--file PATH` **or** stdin (`--file -`, or omit `--file`).
-Drafts usually carry metainfo — a header, trailing notes — that must not be
-published, so produce the clean body and pipe it through a quoted heredoc: no
-temp file, and backticks, `$`, and quotes pass through verbatim.
+Going the other way, a publish time must carry a UTC offset. A bare wall-clock
+time is rejected rather than guessed at, which is deliberate: "Friday at six"
+is ambiguous, and the failure is cheaper than publishing to the wrong hour.
+Resolve it with the user, not with an assumption.
 
-```
-uv run <skill_dir>/scripts/tg_publish.py schedule --channel @name \
-  --at 2026-06-27T18:00:00+03:00 --file - <<'EOF'
-**Body** with `code`, a price of 40$, and a ||spoiler||.
-EOF
-```
+**A new publish time must be at least an hour out.** The floor has no
+override, and it is not a Telegram limit — it exists so that scheduling cannot
+be used to publish something effectively now. If the user wants it sooner, the
+answer is a later time or a human posting it themselves, never a workaround.
+Rewriting the body of an already-queued post is exempt: fixing a typo on an
+imminent post must not be blocked.
 
-`--at` must be **ISO-8601 with a UTC offset** (`…+03:00`); a naive time is
-rejected as ambiguous. The post must be at least **1 hour** ahead — an earlier
-time exits 1, and there is no override flag.
+## Bodies, photos and captions
 
-Photos:
+A post body is Markdown, rendered straight to Telegram's formatting entities —
+see [markup.md](markup.md) for what survives the trip. It is published
+**verbatim**: nothing strips a draft's headers, notes or working titles, so
+send the clean body and nothing else.
 
-```
-uv run <skill_dir>/scripts/tg_publish.py schedule --channel @name \
-  --file post.md --photo cover.jpg --photo chart.png \
-  --at 2026-06-27T18:00:00+03:00
-```
+Attaching images turns the post into an album, and the body stops being a body
+and becomes the album's **caption**. That changes two things. A caption may be
+empty, so a photo-only post is legitimate. And captions are held to a much
+shorter length limit than text posts — a limit Telegram enforces, not this
+server, and one that depends on whether the account has Premium. A body that
+was fine as a text post can be rejected as a caption; when Telegram rejects
+it, nothing is queued.
 
-`--photo` repeats up to 10 images, which publish as **one album**. The body
-then becomes the **caption** and may be empty (omit `--file` for a caption-less
-photo post). The caption renders below the photos as in the Telegram UI;
-`--caption-above` flips it on top. Only real photo files are accepted
-(`.jpg`/`.jpeg`/`.png`/`.webp`) — anything else would go out as a document, so
-convert first.
+Rewriting a post that has photos rewrites its caption. The photos themselves
+cannot be changed — that needs a new post.
 
-Length caps are enforced by **Telegram, not the CLI**, and depend on the
-account: 1024 characters for captions (2048 with Premium), 4096 for text posts.
-If Telegram rejects the body, the command exits 1 with a readable error and
-nothing is queued.
+## Which write tool
 
-## Retime — `reschedule`
-
-```
-uv run <skill_dir>/scripts/tg_publish.py reschedule --channel @name \
-  --id 182 --at 2026-06-28T19:00:00+03:00
-```
-
-Body unchanged, caption position unchanged; the 1-hour floor applies again.
-
-## Rewrite — `edit`
-
-```
-uv run <skill_dir>/scripts/tg_publish.py edit --channel @name \
-  --id 182 --file revised.md
-```
-
-Replaces the body (same `--file`/stdin rules as `schedule`), keeps the publish
-time — no floor check. On a photo post it rewrites the caption but cannot add
-or replace the photos themselves.
-
-## After any write
-
-Telethon returns `None` for scheduled edits, so the confirmation block
-(publish time, `sched-msg` id, body preview) is built from the known inputs
-rather than from Telegram's response. Confirm it landed by running `scheduled`.
+- **Time changes, body stays** → `publish_reschedule`.
+- **Body changes, time stays** → `publish_edit`. It **replaces** the body
+  rather than appending to it, so read the post with `list_scheduled` first
+  whenever you are editing text you did not write in this session.
+- **Both change** → reschedule and edit are separate calls; confirm both with
+  the user before either.

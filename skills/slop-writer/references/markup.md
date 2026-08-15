@@ -1,9 +1,9 @@
 # Post markup reference
 
-Read this before writing a post body for `tg_publish.py`
-(`schedule`/`edit`). The body is a Markdown file; `slop_writer/markdown.py` walks
-mistune's AST straight to Telegram `MessageEntity` offsets — there is **no HTML
-step**, so HTML tags are not interpreted (write Markdown, not `<b>`).
+Read this before writing a post body for `publish_schedule` or `publish_edit`.
+A body is Markdown, walked straight to Telegram's formatting entities — there
+is **no HTML step**, so HTML tags are not interpreted (write Markdown, not
+`<b>`).
 
 ## Supported markup
 
@@ -52,8 +52,5 @@ block, bold line) as noted above. Raw HTML is not parsed.
 - A list may follow a paragraph **without** a blank line in between.
 - For tabular data, a Markdown table or a fenced code block both render as a
   monospace block — pick whichever reads better.
-- The body comes from `--file PATH` or stdin (`--file -`, or omit `--file`);
-  either way it is published **verbatim** — there is no front-matter/metainfo
-  stripping. Pass only the clean body. When a draft also holds a header or
-  notes, produce the body and pipe it via a quoted heredoc (`--file - <<'EOF'`)
-  rather than writing a temp file.
+- A body is published **verbatim** — nothing strips front-matter, a draft's
+  working title, or trailing notes. Send the clean body and nothing else.
