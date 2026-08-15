@@ -310,23 +310,15 @@ async def assert_text_only(mcp: FastMCP) -> None:
 def _complete_sdk_settings_model() -> None:
     """Resolve the SDK's own `Settings` model before anything constructs it.
 
-    `mcp.server.fastmcp.server.Settings` declares `lifespan` with a forward
-    reference it never resolves, so pydantic-settings warns
-    `IncompleteFieldDefinitionWarning` on every `FastMCP(...)` — meaning every
-    server start. On stdio that lands in stderr, which is where the server's
-    own log lines live, so the first thing a reader sees is a five-line warning
-    about somebody else's model.
+    `mcp.server.fastmcp.server.Settings` leaves `lifespan`'s forward reference
+    unresolved, so pydantic-settings warns on every `FastMCP(...)` — every
+    server start — into the stderr our own log lines share. `model_rebuild()`
+    is what the warning asks for and leaves the class correctly defined, where
+    a `filterwarnings` would also hide the same warning about *our* models.
 
-    `model_rebuild()` is the fix the warning itself asks for, and it is not
-    suppression: the class ends up correctly defined rather than quietly
-    broken. Doing it here, at the boundary that owns the SDK, keeps it out of
-    the domain — and out of a `filterwarnings` that would also hide the same
-    warning about *our* models.
-
-    Best-effort by construction: this reaches into another package's private
-    shape, so a moved class costs a noisy stderr and never a failed start. The
-    upstream fix belongs upstream; `mcp` 1.29 is the newest release under the
-    `<2` pin and still carries it."""
+    Best-effort: it reaches into another package's private shape, so a moved
+    class costs a noisy stderr, never a failed start. `mcp` 1.29 is the newest
+    release under the `<2` pin and still carries it."""
     try:
         from mcp.server.fastmcp.server import Settings
 

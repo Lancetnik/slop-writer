@@ -76,21 +76,15 @@ _USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{4,31}\Z")
 
 
 def _handle(label: str) -> str:
-    """A handle, displayed the way a human writes one: with the `@`.
+    """A handle with its `@`, restored for display.
 
-    The server strips `@` on the way in, because `@chan` and `chan` are one
-    channel (`server.normalize_channel`, #15) and the DB filename is derived
-    from the stripped form. That decision is about *identity*; a heading is
-    display, and dropping the sigil there costs the reader the one character
-    that says this string is a Telegram handle rather than a word.
+    `server.normalize_channel` strips it because `@chan` and `chan` are one
+    channel and the DB filename comes off the stripped form. That is identity;
+    a heading is display, so it comes back here — one place, so the CLI and the
+    server render one line rather than two.
 
-    Restoring it here rather than at each call site is what keeps the two
-    callers agreeing: the CLI passes whatever the user typed, the server passes
-    the normalized form, and both render the same line.
-
-    Anything that is not username-shaped is returned untouched — a group title,
-    a `t.me/...` link, a numeric id. Prefixing those would assert something
-    false."""
+    Username-shaped labels only: a group title, a `t.me/...` link and a numeric
+    id reach the same heading, and prefixing those asserts something false."""
     return f"@{label}" if _USERNAME.fullmatch(label) else label
 
 
@@ -475,11 +469,8 @@ def summarize_group(
     out.append(f"- Joins: {_via_breakdown(events, 'join')}  |  "
                f"Leaves: {_via_breakdown(events, 'leave')}  |  "
                f"net {len(joins) - len(leaves):+d}")
-    # The counts above mean different things depending on what could be read,
-    # and the reader cannot tell the two apart from the numbers. Absent (rather
-    # than False) means a caller built this dict by hand and does not know —
-    # claiming "service messages only" there would be an assertion, not a
-    # default.
+    # Absent (rather than False) means a caller built this dict by hand and does
+    # not know; claiming "service messages only" there would be an assertion.
     if overview.get("admin_log") is None:
         pass
     elif overview["admin_log"]:

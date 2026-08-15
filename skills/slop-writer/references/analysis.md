@@ -54,16 +54,12 @@ gone; nothing can be filled in retroactively. A post with one metrics row
 supports a total, never a trend — check the row count per post before
 reporting change over time.
 
-**A ranking compares snapshots, not posts.** Every row was last measured
-whenever its post happened to be scraped, so a window can hold one post
-measured this morning next to one measured a month ago — and the older
-measurement is the *smaller* one, because views kept arriving after it was
-taken. The order changes accordingly. This is not the age effect above: two
-posts of identical age rank differently depending only on when each was last
-scanned. So before ranking by any rate, run `refresh_posts` over the window
-you are about to rank, then quote the ranking with the measurement date. Skip
-it and two honest runs of the same question return different winners, which
-reads as a broken tool rather than the arithmetic it is.
+**A ranking compares snapshots, not posts.** Each row was measured when its
+post was last scraped, and the staler row is the *smaller* one: views kept
+arriving after it was taken. Two posts of identical age therefore rank by
+scrape recency rather than by performance — a separate effect from age. Run
+`refresh_posts` over a window before ranking it by a rate, or two runs of one
+question return different winners.
 
 ## Who is who in the group
 

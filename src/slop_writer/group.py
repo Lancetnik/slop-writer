@@ -397,11 +397,9 @@ async def _fetch_admin_log_events(
     authoritative join source. Requires admin; degrades to empty with a
     notice otherwise.
 
-    That degradation is why the third element exists. Empty is ambiguous — a
-    group with no membership changes and a group this account may not read the
-    log for produce the same two values — and the difference decides whether
-    the counts are a total or a floor. It used to be resolvable only from a log
-    line, which on a stdio server goes to a stderr nobody reads."""
+    That degradation is why the third element exists: empty is ambiguous — no
+    membership changes and no admin rights return the same two values — and the
+    difference decides whether the counts are a total or a floor."""
     events_filter = ChannelAdminLogEventsFilter(
         join=True, leave=True, invite=True, ban=True, unban=False,
         kick=True, unkick=False, promote=False, demote=False, info=False,
@@ -701,11 +699,9 @@ async def scan_group_with_client(
         "members": target.members,
         "standalone": target.channel_id is None,
         "id_range": f"{lo}..{hi}" if scanned_ids else "—",
-        # Which sources the join/leave counts came from. Not a detail of how
-        # the scan ran: without the admin log the counts are a floor, because
-        # Telegram suppresses service messages during the join bursts a reader
-        # most wants counted. The renderer says so on the line that carries
-        # the numbers.
+        # Where the join/leave counts came from: without the admin log they are
+        # a floor, because Telegram suppresses service messages during the join
+        # bursts most worth counting.
         "admin_log": admin_log,
     }
     messages = [
