@@ -159,20 +159,26 @@ def test_a_whole_album_becomes_one_post_carrying_every_attachment(tmp_path):
 
 
 def test_a_window_that_cuts_an_album_still_writes_exactly_one_post(tmp_path):
-    """The phantom bug's own shape: `latest=2` hands the pipeline a suffix of
-    a three-member album, and the captionless 10 would have become a post of
-    its own. `complete_albums` pulls 9 back first, so it never does."""
+    """The phantom bug's own shape: an offset landing inside a three-member
+    album hands the pipeline a suffix of it, and the captionless 10 would have
+    become a post of its own. `complete_albums` pulls 9 back first, so it
+    never does.
+
+    The offset is what cuts here. A *count* no longer can: it is counted in
+    posts, so a walk stops on the first message of the post past the count and
+    the album it was reading is whole on that side."""
     client = FakeClient(album(9, 10, 11, caption_on=9))
 
-    do_scrape(client, tmp_path, latest=2, with_media=False, with_channel_info=False)
+    do_scrape(client, tmp_path, offset_id=10, with_media=False,
+              with_channel_info=False)
 
     assert rows(tmp_path, "SELECT id FROM posts") == [(9,)]
     assert rows(
         tmp_path, "SELECT attachment_id FROM post_attachments ORDER BY attachment_id"
     ) == [(9,), (10,), (11,)]
     # The window really was a suffix — 9 arrived through the probe, not the walk.
-    assert client.iter_calls[0]["limit"] == 2
-    assert client.iter_calls[0]["reverse"] is False
+    assert client.iter_calls[0]["offset_id"] == 9
+    assert 9 in client.calls[0]
 
 
 def test_an_attachment_is_taken_off_the_post_that_wrongly_held_it(tmp_path):
@@ -369,6 +375,66 @@ def test_latest_walks_newest_first_and_offset_id_is_inclusive(tmp_path):
     assert sorted(p["id"] for p in paged.posts) == [11, 12]
     assert client.iter_calls[0]["reverse"] is True
     assert client.iter_calls[0]["offset_id"] == 10
+
+
+def test_a_count_counts_posts_not_messages(tmp_path):
+    """The bug: Telethon's `limit` counts messages, so `latest=N` over a
+    channel that posts albums stored fewer than N posts — 100 asked for, 71
+    stored — and the shortfall was indistinguishable from a channel that held
+    no more. Ten messages here are five posts; asking for four must fetch a
+    fifth message rather than stopping at four."""
+    posts = [msg(1, text="a"), msg(2, text="b")]
+    posts += album(3, 4, 5, gid=71, caption_on=3)
+    posts += [msg(6, text="c")]
+    posts += album(7, 8, 9, gid=72, caption_on=7)
+    posts += [msg(10, text="d")]
+
+    result = do_scrape(FakeClient(posts), tmp_path, latest=4,
+                       with_media=False, with_channel_info=False)
+
+    assert [p["id"] for p in result.posts] == [3, 6, 7, 10]
+    assert result.history_exhausted is False
+
+
+def test_a_walk_that_runs_out_of_channel_says_so(tmp_path):
+    """The other half. A count that came back short means one thing now —
+    the history ended — and it has to be stated, or an agent reads the same
+    short answer as "that is the whole channel" either way."""
+    posts = [msg(1, text="a")] + album(2, 3, gid=71, caption_on=2)
+
+    result = do_scrape(FakeClient(posts), tmp_path, latest=50,
+                       with_media=False, with_channel_info=False)
+
+    assert [p["id"] for p in result.posts] == [1, 2]
+    assert result.history_exhausted is True
+
+
+def test_a_window_walk_counts_posts_the_same_way(tmp_path):
+    """Both arms of the selection, one rule. The forward walk pages history,
+    so a `limit` that silently shrank would leave gaps between the pages an
+    agent thought it had covered."""
+    posts = album(1, 2, 3, gid=71, caption_on=1) + [msg(4, text="b"), msg(5, text="c")]
+
+    result = do_scrape(FakeClient(posts), tmp_path, limit=2,
+                       with_media=False, with_channel_info=False)
+
+    assert [p["id"] for p in result.posts] == [1, 4]
+    assert result.history_exhausted is False
+
+
+def test_a_refresh_claims_nothing_about_what_remains(tmp_path):
+    """Absent is not False: a refresh of known ids walks no window, so it
+    cannot say whether history remains, and a `False` here would send an agent
+    paging for more after a run that never looked."""
+    result = run(
+        refresh_posts_with_client(
+            client_with := FakeClient([msg(10, text="here")]), ENTITY, CHANNEL,
+            [10], tmp_path, with_media=False, with_channel_info=False,
+        )
+    )
+
+    assert result.history_exhausted is None
+    assert client_with.iter_calls == []
 
 
 def test_a_refresh_skips_ids_the_channel_no_longer_has(tmp_path, caplog):

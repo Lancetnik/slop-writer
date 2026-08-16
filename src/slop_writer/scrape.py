@@ -91,10 +91,43 @@ class ScrapeResult:
     """What one run produced, in the shapes `render.summarize_scrape` consumes.
 
     Returned rather than printed: the CLI renders it to stdout, and a second
-    caller can do something else with the same run."""
+    caller can do something else with the same run.
+
+    `history_exhausted` is what makes a short run readable: True means the walk
+    ran out of channel to read, False means it stopped at the requested count
+    with history still beyond it. `None` is "this run did not walk a window" —
+    a refresh of known ids, which can say nothing either way."""
     channel: str
     posts: list[dict]
     channels: list[dict]
+    history_exhausted: bool | None = None
+
+
+async def take_posts(stream, want: int | None) -> tuple[list[Message], bool]:
+    """Read a message stream until `want` *posts* are whole, or it runs dry.
+
+    Telethon's `limit` counts messages, and an album is many messages but one
+    post - so a straight `limit=N` over a channel that posts albums stores
+    fewer than N posts, and the shortfall is indistinguishable from a channel
+    that simply holds no more. Counting posts instead gives a short run exactly
+    one meaning: the history ended. That is the second half of the returned
+    pair, and `summarize_scrape` is what states it.
+
+    Album members carry contiguous ids, so a key the stream has not shown yet
+    closes the previous post: accept every member of the post being read, and
+    stop on the first message of the one past the count. The trailing post is
+    therefore whole on this side; `complete_albums` covers the other one.
+    """
+    raw: list[Message] = []
+    seen: set[tuple[str, int]] = set()
+    async for msg in stream:
+        key = ("album", msg.grouped_id) if msg.grouped_id else ("post", msg.id)
+        if key not in seen:
+            if want is not None and len(seen) >= want:
+                return raw, False
+            seen.add(key)
+        raw.append(msg)
+    return raw, True
 
 
 async def complete_albums(
@@ -644,6 +677,10 @@ async def ingest_with_client(
     `complete_albums` whether the ids around a group can be trusted to prove
     the album is whole (true for a scrape window, false for arbitrary ids).
 
+    A source answers with `(messages, history_exhausted)`: whether the walk ran
+    out of channel is known only to whoever did the walking, and a source that
+    walks no window (a refresh of known ids) says `None` rather than guessing.
+
     The client is a parameter rather than something this function opens, so
     whoever owns the connection decides its lifetime - see the module
     docstring. Callers must have resolved the handle already: `open_db` below
@@ -651,7 +688,7 @@ async def ingest_with_client(
     scrape_date = datetime.now(UTC).isoformat()
     conn = open_db(output_dir, channel)
     try:
-        raw = await source(client, entity)
+        raw, history_exhausted = await source(client, entity)
         post_summaries, channel_summaries = await _persist_messages(
             client, entity, channel, raw, conn, output_dir / "media",
             scrape_date, with_comments, with_media, with_channel_info,
@@ -660,7 +697,9 @@ async def ingest_with_client(
     finally:
         conn.close()
 
-    return ScrapeResult(channel, post_summaries, channel_summaries)
+    return ScrapeResult(
+        channel, post_summaries, channel_summaries, history_exhausted
+    )
 
 
 async def scrape_posts_with_client(
@@ -681,32 +720,41 @@ async def scrape_posts_with_client(
     # most recent N posts. `limit=N` alone keeps the chronological
     # (oldest-first) walk, which is what you want when paging forward from
     # an offset.
+    #
+    # Both counts are *posts*, which is why neither reaches Telethon's `limit`:
+    # `take_posts` walks the unbounded stream and stops on the post past the
+    # count. It reads at most one extra batch, and it is what keeps "fewer than
+    # asked for" meaning "the channel ended" over a channel that posts albums.
     if latest is not None:
         reverse = False
-        iter_limit = latest
+        want = latest
         iter_offset_id = 0
         iter_offset_date = None
     else:
         reverse = True
-        iter_limit = limit
+        want = limit
         # Telethon's offset_id is exclusive; -1 makes offset_id inclusive.
         iter_offset_id = offset_id - 1 if offset_id else 0
         iter_offset_date = offset_date
 
-    async def source(client: TelegramClient, entity) -> list[Message]:
+    async def source(client: TelegramClient, entity) -> tuple[list[Message], bool]:
         log.info("authenticated, scraping %s", channel)
-        raw = [
-            msg
-            async for msg in client.iter_messages(
+        raw, history_exhausted = await take_posts(
+            client.iter_messages(
                 channel,
-                limit=iter_limit,
+                limit=None,
                 reverse=reverse,
                 offset_id=iter_offset_id,
                 offset_date=iter_offset_date,
-            )
-        ]
-        log.info("fetched %d messages", len(raw))
-        return raw
+            ),
+            want,
+        )
+        log.info(
+            "fetched %d messages (history %s)",
+            len(raw),
+            "exhausted" if history_exhausted else "continues past this window",
+        )
+        return raw, history_exhausted
 
     return await ingest_with_client(
         client, entity, channel, output_dir, source,
@@ -726,7 +774,9 @@ async def refresh_posts_with_client(
     with_channel_info: bool = True,
     on_progress: ProgressHook | None = None,
 ) -> ScrapeResult:
-    async def source(client: TelegramClient, entity) -> list[Message]:
+    async def source(
+        client: TelegramClient, entity
+    ) -> tuple[list[Message], None]:
         log.info("authenticated, fetching %d post(s) from %s", len(post_ids), channel)
         # get_messages returns a parallel list; entries are None for missing ids.
         fetched = await client.get_messages(entity, ids=post_ids)
@@ -740,7 +790,8 @@ async def refresh_posts_with_client(
         if missing:
             log.warning("not found in channel: %s", missing)
         log.info("resolved %d/%d post(s)", len(raw), len(post_ids))
-        return raw
+        # No window was walked, so this run knows nothing about what remains.
+        return raw, None
 
     return await ingest_with_client(
         client, entity, channel, output_dir, source,

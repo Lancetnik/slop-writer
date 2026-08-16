@@ -129,8 +129,19 @@ def summarize_query(
     return "\n".join(out)
 
 
-def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> str:
-    """Render an LLM-oriented summary of a scrape run."""
+def summarize_scrape(
+    channel: str,
+    posts: list[dict],
+    channels: list[dict],
+    history_exhausted: bool | None = None,
+) -> str:
+    """Render an LLM-oriented summary of a scrape run.
+
+    `history_exhausted` is the difference between "that is the whole channel"
+    and "that is one window of it" — a count alone reads as the first, which
+    is how a walk that stopped at its requested size gets mistaken for a
+    channel with nothing older in it. `None` (a refresh, which walks no
+    window) states neither."""
     out = [f"\n# Scrape summary: {_handle(channel)}\n"]
     if not posts:
         out.append("No posts fetched.")
@@ -151,6 +162,19 @@ def summarize_scrape(channel: str, posts: list[dict], channels: list[dict]) -> s
     out.append("## Overview\n")
     span = f"  ({dates[0][:10]} → {dates[-1][:10]})" if dates else ""
     out.append(f"- Posts: {n}{span}")
+    if history_exhausted is not None:
+        ids = sorted(p["id"] for p in posts)
+        out.append(
+            "- This is the whole channel: the walk reached the end of its "
+            "history, so no posts remain outside this window."
+            if history_exhausted
+            else (
+                f"- This is one window, not the whole channel: the walk "
+                f"stopped at the requested count over ids "
+                f"{ids[0]}–{ids[-1]}, with more history beyond it. Scrape "
+                f"again outside that range to keep going."
+            )
+        )
     out.append(f"- Views: {views:,}  (avg {views // n:,}/post)")
     out.append(f"- Reactions: {reactions:,}   Comments: {comments:,}   "
                f"Forwards of your posts: {forwards:,}")

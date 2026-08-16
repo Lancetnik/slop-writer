@@ -107,6 +107,12 @@ router (adr/0005) to `references/{analysis,schema,publishing,markup}.md`.
 
 - `post_metrics` is **append-only** — `MAX(id)` for "latest snapshot", never
   `MAX(scrape_date)`. Canonical CTE in `references/schema.md`.
+- **A selection counts posts, never messages.** Telethon's `limit` counts
+  messages and an album is many messages, so `take_posts` walks an unbounded
+  stream and stops on the first message past the count instead. That is what
+  makes a short run mean exactly one thing — the history ended — which
+  `ScrapeResult.history_exhausted` carries and `summarize_scrape` states.
+  **Absent is not `False`** there either: a refresh walks no window.
 - **One album = one `posts` row.** `complete_albums` re-fetches missing members
   before `process_post` picks the head, so a captionless member never becomes a
   post of its own (a phantom row doubles the album in every `SUM`/`AVG`).
