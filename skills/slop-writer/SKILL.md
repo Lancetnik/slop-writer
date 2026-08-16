@@ -75,14 +75,6 @@ the album stays whole — expect log lines about pulled-in members and about
 removed phantom rows, and read both as maintenance, not failure. Never sum a
 metric per album member.
 
-**A scan that comes back short has reached the end of the history.** How many
-posts you ask for is counted in posts, an album included as the one post it
-is, so the only reason to get fewer is that the channel ran out. The summary
-states which of the two it was — a channel read whole, or one window of a
-longer history — and that line, not the number of posts, is what says whether
-anything is left to scan. Asking for more than a channel holds is the cheap
-way to be sure you have all of it.
-
 **Metrics are append-only snapshots.** Every scan appends a row per post
 rather than overwriting one, which is what makes change over time answerable.
 The latest snapshot is the one with the highest row id — *not* the latest

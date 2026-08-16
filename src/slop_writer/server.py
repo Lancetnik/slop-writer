@@ -177,8 +177,8 @@ class LatestSelect(BaseModel):
         ge=1,
         le=5000,
         description=(
-            "How many recent posts. An album counts as one, and fewer than "
-            "this coming back means the channel has no more history."
+            "How many recent posts. An album counts as one, so fewer coming "
+            "back means the channel has no older history."
         ),
     )
 
@@ -201,9 +201,8 @@ class WindowSelect(BaseModel):
         None,
         ge=1,
         description=(
-            "Cap on posts fetched in the walk. An album counts as one, and "
-            "fewer than this coming back means the walk reached the newest "
-            "post. Omit to read to the end."
+            "Cap on posts fetched in the walk. An album counts as one, so "
+            "fewer coming back means the walk reached the newest post."
         ),
     )
 
