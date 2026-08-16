@@ -29,11 +29,24 @@
       "Bash(awk *)",
       "Bash(sed *)",
       "Bash(tr *)",
-      "Bash(uv run skills/tg-analytic-skill/scripts/tg_query.py *)"
+      "Bash(uv run skills/tg-analytic-skill/scripts/tg_query.py *)",
+      "mcp__codegraph__*"
     ]
   },
   "enabledMcpjsonServers": [
     "codegraph"
   ],
-  "enableAllProjectMcpServers": true
+  "enableAllProjectMcpServers": true,
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "codegraph prompt-hook"
+          }
+        ]
+      }
+    ]
+  }
 }

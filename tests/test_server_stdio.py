@@ -215,7 +215,7 @@ def test_a_successful_call_is_text_and_only_text(wire):
     """The success half of #16, which no in-process call can show: the result
     carries prose and `structuredContent` stays absent, so the client renders
     what the tool wrote instead of a table built from a schema."""
-    result = wire.call("run_query", channel=SEEDED, sql="SELECT 1 AS one")
+    result = wire.call("run_query", channel=SEEDED, queries=[{"sql": "SELECT 1 AS one"}])
     assert result.isError is False
     assert result.structuredContent is None
     assert [block.type for block in result.content] == ["text"]
@@ -226,7 +226,7 @@ def test_a_failure_is_the_contract_inside_the_text_block(wire):
     """`isError` plus `{code, message, hint}` as text — not as structure,
     because structure would cost the message. The database for this channel
     was never created, which is the failure a first turn actually hits."""
-    result = wire.call("run_query", channel=UNSCRAPED, sql="SELECT 1")
+    result = wire.call("run_query", channel=UNSCRAPED, queries=[{"sql": "SELECT 1"}])
     assert result.isError is True
     assert result.structuredContent is None
 
@@ -243,12 +243,15 @@ def test_a_failure_is_the_contract_inside_the_text_block(wire):
     assert set(payload) >= {"code", "message", "hint"}
 
 
-def test_a_rejected_query_answers_in_the_contract_too(wire):
-    """The guard is `validate_read_only`, and the failure has to arrive as a
-    code rather than as a database error the model would read as a bug."""
-    result = wire.call("run_query", channel=SEEDED, sql="DROP TABLE posts")
-    assert result.isError is True
-    assert contract_of(text_of(result))["code"] == "QUERY_REJECTED"
+def test_a_rejected_query_is_a_section_not_a_call_failure(wire):
+    """What the client actually receives for bad SQL: a *successful* call whose
+    text carries the refusal, code and all. `isError` stays reserved for the
+    call itself refusing — the test above, where there is no database to look
+    in — so the two are visible here as different results of the same tool."""
+    result = wire.call("run_query", channel=SEEDED, queries=[{"sql": "DROP TABLE posts"}])
+    assert result.isError is False
+    assert result.structuredContent is None
+    assert "**failed** (QUERY_REJECTED)" in text_of(result)
 
 
 def test_a_setup_failure_carries_the_servers_own_remedy(wire):

@@ -55,10 +55,11 @@ from .group import scan_group
 from .publish import edit_post, parse_schedule_time, prepare_schedule, render_body
 from .publish import reschedule_post as reschedule_scheduled_post
 from .publish import schedule_post as send_scheduled_post
-from .query import run_query as run_sql
+from .query import QueryFailure
+from .query import run_queries as run_sql_batch
 from .render import (
     summarize_group,
-    summarize_query,
+    summarize_queries,
     summarize_schedule,
     summarize_scheduled,
     summarize_scrape,
@@ -163,6 +164,31 @@ def normalize_channel(handle: str) -> str:
 # which `{"mode": "latest", "offset_id": 100}` validates as `latest` and the
 # foreign field vanishes in silence.
 # --------------------------------------------------------------------------
+
+
+# A model's docstring ships as its schema `description`, and this one rides on
+# the only always-loaded tool — so it is addressed to the model, and the
+# rationale stays out here where a reader of the code is the one paying for it.
+#
+# `label` is optional because `queries` carries the single-question case too,
+# and there a label names something the caller is still holding. It earns its
+# place from two questions up: the answers come back as sections and the SQL
+# that produced each is no longer in front of the reader.
+class Query(BaseModel):
+    """One question: the SQL, and optionally a short name for what it answers."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sql: str = Field(description="A single SELECT or WITH statement.")
+    label: str | None = Field(
+        None,
+        max_length=60,
+        description=(
+            "What this query answers, a few words — 'views by post', "
+            "'joins per day'. Becomes the section heading. Give one whenever "
+            "you ask more than one question."
+        ),
+    )
 
 
 class LatestSelect(BaseModel):
@@ -563,32 +589,53 @@ def build_server(project_root: Path) -> FastMCP:
         annotations=read_only,
         meta={"anthropic/alwaysLoad": True},
         description=(
-            "Run one read-only SQL query against a channel's scraped database "
-            "and get a Markdown table back. This is how every analytics "
-            "question gets answered — scrape once, then query.\n"
-            "A single SELECT or WITH statement; anything else is rejected and "
-            "the database is opened read-only regardless. Aggregate in SQL "
-            "rather than pulling rows and counting by hand.\n"
-            "`limit` caps the RENDERED rows (default 50, max 500); the true "
-            "row count is always reported, so a clipped answer is always "
-            "visible as one. `truncate_cells=false` prints long text in full — "
-            "needed to read post bodies, and the fastest way to blow the "
-            "output cap.\n"
-            "Requires a prior scrape of that channel. A query naming a table "
-            "or column that does not exist comes back with the schema "
-            "attached, so one retry is usually enough."
+            "Run read-only SQL against a channel's scraped database and get "
+            "Markdown tables back — how every analytics question is answered, "
+            "once that channel has been scraped.\n"
+            "`queries` is a LIST, and batching is the normal use: every "
+            "question that does not need a value from another's answer goes in "
+            "the same call, which costs one round trip instead of one each.\n"
+            "Aggregate in SQL rather than pulling rows and counting by hand. "
+            "`limit` caps the RENDERED rows per query; the true row count is "
+            "always reported, so a clipped answer is visible as one. "
+            "`truncate_cells=false` prints long text in full — needed to read "
+            "post bodies, and the fastest way to blow the output cap.\n"
+            "A query naming a table or column that does not exist comes back "
+            "with the schema attached, so one retry is usually enough; it "
+            "fails in its own section and the others still answer."
         ),
     )
     async def run_query(
         channel: str,
-        sql: str,
+        queries: list[Query] = Field(min_length=1, max_length=20),
         limit: int = Field(50, ge=0, le=500),
         truncate_cells: bool = True,
     ) -> str:
         # No session check: `query` and `db` are the Telegram-free pair, which
         # is what lets an analytics question be answered with no client at all.
-        result = run_sql(sql, normalize_channel(channel), output_dir)
-        return summarize_query(result.columns, result.rows, limit, truncate_cells)
+        results = run_sql_batch(
+            [q.sql for q in queries], normalize_channel(channel), output_dir
+        )
+
+        # A query's verdict is content; `isError` is the *call* refusing.
+        # Nothing below raises however many statements failed — `run_queries`
+        # has already raised anything batch-wide (no database at all), and that
+        # is the only condition with no per-question answer to give. Counting
+        # failures here would make the flag mean two unrelated things at once,
+        # and would let the one bad statement in a batch of four discard the
+        # three answers standing beside it.
+        items = []
+        for q, r in zip(queries, results, strict=True):
+            if isinstance(r, QueryFailure):
+                items.append({
+                    "label": q.label,
+                    "error": {"code": r.code, "message": r.message, "hint": r.hint},
+                })
+            else:
+                items.append(
+                    {"label": q.label, "columns": r.columns, "rows": r.rows}
+                )
+        return summarize_queries(items, limit, truncate_cells)
 
     # ----------------------------------------------------------------------
     # The write surface (adr/0003). Three tools, gated by `permission_rules`.

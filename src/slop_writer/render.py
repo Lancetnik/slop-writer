@@ -129,6 +129,56 @@ def summarize_query(
     return "\n".join(out)
 
 
+def summarize_queries(
+    items: list[dict],
+    limit: int = 50,
+    truncate: bool = True,
+) -> str:
+    """Render a batch of query results as one document.
+
+    Each item is a plain dict — `{label, columns, rows}` for an answer,
+    `{label, error: {code, message, hint}}` for a refusal — so this stays free
+    of `query`'s dataclasses like every other renderer here.
+
+    Numbering is positional and always printed, even for a failure: the batch's
+    whole contract is that item *i* answers question *i*, and a silently
+    skipped section would shift every answer after it against the questions the
+    caller still has in hand. The label rides along because by the time a batch
+    comes back, the caller is holding N answers and no longer has the SQL of
+    each in front of it.
+
+    **One unlabelled query renders as the bare table** — no heading, no "1.".
+    `queries` carries the single-question case too, and a lone section number
+    orders nothing while a heading names what the caller just asked and still
+    remembers. Both would be per-call overhead on the most common call there
+    is."""
+    if not items:
+        return "(no queries)"
+
+    if len(items) == 1 and not items[0].get("label"):
+        only = items[0]
+        error = only.get("error")
+        if error:
+            return f"**failed** ({error['code']}): {error['message']}" + (
+                f"\n\n{error['hint']}" if error.get("hint") else ""
+            )
+        return summarize_query(only["columns"], only["rows"], limit, truncate)
+
+    out = []
+    for n, item in enumerate(items, 1):
+        head = f"## {n}. {item.get('label') or 'query'}"
+        error = item.get("error")
+        if error:
+            out.append(f"{head}\n\n**failed** ({error['code']}): {error['message']}")
+            if error.get("hint"):
+                out.append(error["hint"])
+            continue
+        out.append(head)
+        out.append(summarize_query(item["columns"], item["rows"], limit, truncate))
+
+    return "\n\n".join(out)
+
+
 def summarize_scrape(
     channel: str,
     posts: list[dict],

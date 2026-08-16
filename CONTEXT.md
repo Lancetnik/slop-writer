@@ -56,6 +56,15 @@ gets, carries no engagement, and is not persisted in the DB. May only be
 queued at least one hour ahead (the minimum lead time).
 _Avoid_: draft, pending post
 
+**Query batch**:
+A series of independent questions answered against one snapshot of one
+scraped channel. Independent is the load-bearing word: the answers are
+positional, and a question the database refuses is answered by that refusal
+while the rest still answer. Asking two questions together is a statement
+that neither needs the other's answer, not that they succeed or fail
+together.
+_Avoid_: transaction, script, multi-query
+
 **Comment**:
 A message in the discussion group replying (directly or transitively) to an auto-forwarded channel post. Stored in `group_messages` with `thread_post_id` set to the originating post's id.
 

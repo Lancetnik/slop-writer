@@ -1,6 +1,6 @@
 [project]
 name = "slop-writer"
-version = "0.4.1"
+version = "0.4.2"
 description = "Telegram channel analytics as MCP tools: the server behind the slop-writer skill, and the library behind both."
 readme = "README.md"
 requires-python = ">=3.11"
