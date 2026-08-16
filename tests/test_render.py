@@ -10,7 +10,7 @@ about, and the group summary has to say where its join/leave counts came from.
 Everything else about the layout stays free to move.
 """
 
-from slop_writer.render import _handle, summarize_group
+from slop_writer.render import _handle, summarize_group, summarize_scrape
 
 
 def test_a_bare_handle_renders_with_its_sigil():
@@ -35,6 +35,34 @@ def test_what_is_not_a_handle_is_not_decorated():
     assert _handle("https://t.me/joinchat/abc") == "https://t.me/joinchat/abc"
     assert _handle("-1001234567890") == "-1001234567890"
     assert _handle("abcd") == "abcd"  # 4 chars: below Telegram's minimum
+
+
+def _scrape(history_exhausted) -> str:
+    posts = [
+        {"id": i, "date": "2026-08-16T10:00:00", "link": f"https://t.me/c/1/{i}",
+         "text": "hi", "views": 10}
+        for i in (41, 42)
+    ]
+    return summarize_scrape("chan", posts, [], history_exhausted)
+
+
+def test_a_walk_that_reached_the_end_of_history_says_the_channel_is_whole():
+    assert "whole channel" in _scrape(True)
+
+
+def test_a_walk_that_stopped_at_its_count_says_more_history_remains():
+    """The count alone reads as "that is all there is", which is how a scrape
+    that filled its window got taken for a fully-scraped channel. The ids bound
+    what was covered, so the next window has somewhere to start."""
+    out = _scrape(False)
+    assert "one window, not the whole channel" in out
+    assert "41–42" in out
+
+
+def test_a_run_that_walked_no_window_claims_neither():
+    """Absent is not False — a refresh cannot see past the ids it was given."""
+    out = _scrape(None)
+    assert "whole channel" not in out and "one window" not in out
 
 
 def _group(**overview) -> str:

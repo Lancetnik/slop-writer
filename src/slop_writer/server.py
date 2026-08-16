@@ -172,7 +172,15 @@ class LatestSelect(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["latest"] = "latest"
-    count: int = Field(100, ge=1, le=5000, description="How many recent posts.")
+    count: int = Field(
+        100,
+        ge=1,
+        le=5000,
+        description=(
+            "How many recent posts. An album counts as one, so fewer coming "
+            "back means the channel has no older history."
+        ),
+    )
 
 
 class WindowSelect(BaseModel):
@@ -190,7 +198,12 @@ class WindowSelect(BaseModel):
         None, description="Start after this moment (ISO-8601)."
     )
     limit: int | None = Field(
-        None, ge=1, description="Cap on messages fetched in the walk."
+        None,
+        ge=1,
+        description=(
+            "Cap on posts fetched in the walk. An album counts as one, so "
+            "fewer coming back means the walk reached the newest post."
+        ),
     )
 
 
@@ -409,7 +422,10 @@ def build_server(project_root: Path) -> FastMCP:
             on_progress=_progress_hook(ctx),
             **_window(select),
         )
-        return summarize_scrape(result.channel, result.posts, result.channels)
+        return summarize_scrape(
+            result.channel, result.posts, result.channels,
+            result.history_exhausted,
+        )
 
     @_tool(
         annotations=local_write,
@@ -440,7 +456,10 @@ def build_server(project_root: Path) -> FastMCP:
             with_channel_info=True,
             on_progress=_progress_hook(ctx),
         )
-        return summarize_scrape(result.channel, result.posts, result.channels)
+        return summarize_scrape(
+            result.channel, result.posts, result.channels,
+            result.history_exhausted,
+        )
 
     @_tool(
         annotations=local_write,

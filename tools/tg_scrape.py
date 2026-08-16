@@ -169,7 +169,12 @@ def scrape_cmd(
             channel_info,
         )
     )
-    print(summarize_scrape(result.channel, result.posts, result.channels))
+    print(
+        summarize_scrape(
+            result.channel, result.posts, result.channels,
+            result.history_exhausted,
+        )
+    )
 
 
 @app.command("fetch")
@@ -202,7 +207,12 @@ def fetch_cmd(
             channel_info,
         )
     )
-    print(summarize_scrape(result.channel, result.posts, result.channels))
+    print(
+        summarize_scrape(
+            result.channel, result.posts, result.channels,
+            result.history_exhausted,
+        )
+    )
 
 
 @app.command("subscribers")

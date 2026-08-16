@@ -38,7 +38,16 @@ the supergroup: the same one is a discussion group once its channel is
 analyzed, so a thread-free record says how it was scanned, not what it is.
 
 **Post**:
-A message published in the channel. Identified by its channel message id.
+A message published in the channel. Identified by its channel message id. An
+album is one post, however many messages carry it — which is why a selection
+is counted in posts and never in messages.
+
+**Exhausted history**:
+A scrape whose walk ran out of channel to read rather than stopping at the
+count it was asked for. The property of one run, not of a channel: the same
+channel is exhausted by a wide window and not by a narrow one. A run that
+walks no window (a refresh of known ids) is neither.
+_Avoid_: complete scrape, full scrape
 
 **Scheduled post**:
 A post queued for Telegram to publish at a future instant, not yet live. Its
