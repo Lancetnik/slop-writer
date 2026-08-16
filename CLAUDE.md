@@ -79,6 +79,12 @@ structure (what calls what, where a symbol is) in codegraph.
 - **Errors are `{code, message, hint}` JSON in the text block** with
   `isError: true`. `_guarded` wraps every tool, names `FLOOD_WAIT` (with
   `seconds`), and labels anything unanticipated `INTERNAL`.
+- **`isError` is the *call* refusing, never one request inside it** (adr/0007).
+  `run_query` takes a list, and a statement SQLite rejects comes back as that
+  question's section — bad SQL beside three good answers must not discard them.
+  Only a condition with no per-question answer to give (`NO_DATA`: no database
+  at all) raises. A tool that takes N requests classifies the two; counting
+  failures would make the flag mean two unrelated things.
 - **Two hints belong to the entrypoint**, which is why `_guarded` takes the
   project's `output_dir`: the setup pair answers with `slop-writer init`, and
   `CANNOT_RESOLVE` answers with the channels this project holds

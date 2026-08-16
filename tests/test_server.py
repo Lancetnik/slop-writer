@@ -318,7 +318,7 @@ def test_every_payload_code_is_in_the_closed_vocabulary(server):
         failure(server, "publish_schedule", channel="@c", body="x",
                 at=iso_in(TOO_SOON)),
         failure(server, "publish_schedule", channel="@c", body="x", at=iso_in(SOON)),
-        failure(server, "run_query", channel="@c", sql="SELECT 1"),
+        failure(server, "run_query", channel="@c", queries=[{"sql": "SELECT 1"}]),
     ]
     for payload in payloads:
         assert payload["code"] in ERROR_CODES
@@ -326,13 +326,74 @@ def test_every_payload_code_is_in_the_closed_vocabulary(server):
 
 
 def test_a_query_before_the_first_scrape_says_so(server):
-    payload = failure(server, "run_query", channel="@chan", sql="SELECT 1")
+    """The one condition that is still `isError` on this path: no database
+    means no per-question answer to give, however many questions were asked.
+    That is what the flag is reserved for now that a query's own verdict
+    travels as content."""
+    payload = failure(server, "run_query", channel="@chan", queries=[{"sql": "SELECT 1"}])
     assert payload["code"] == "NO_DATA"
 
 
-def test_a_rejected_query_is_not_an_internal_error(server):
-    payload = failure(server, "run_query", channel="@chan", sql="DROP TABLE posts")
-    assert payload["code"] in {"QUERY_REJECTED", "NO_DATA"}
+@pytest.fixture
+def seeded(tmp_path):
+    """A server over a project that has one real (empty) channel database."""
+    from slop_writer.db import open_db
+
+    open_db(data_dir(tmp_path), "chan").close()
+    return build_server(tmp_path)
+
+
+def test_one_bad_query_still_returns_the_others(seeded):
+    """The batch's reason to exist: `isError` would discard three good answers
+    to report one bad statement, and the model would have to re-ask them all —
+    the round trip the batch was collapsing in the first place."""
+    text = call(
+        seeded, "run_query", channel="@chan",
+        queries=[
+            {"sql": "SELECT 1 AS one", "label": "fine"},
+            {"sql": "SELECT nope FROM posts", "label": "broken"},
+            {"sql": "SELECT 2 AS two", "label": "also fine"},
+        ],
+    )
+    assert "## 1. fine" in text and "## 3. also fine" in text
+    assert "**failed** (QUERY_REJECTED)" in text
+    assert "| 1 |" in text and "| 2 |" in text
+
+
+def test_a_rejected_statement_is_content_not_a_call_failure(seeded):
+    """The database was there and the call ran, so the refusal is this query's
+    verdict rather than the call's. Raising here would have made `isError`
+    mean two unrelated things — "no database" and "bad SQL" — and only one of
+    them is fixed by looking at the schema."""
+    text = call(
+        seeded, "run_query", channel="@chan", queries=[{"sql": "DROP TABLE posts"}]
+    )
+    assert text.startswith("**failed** (QUERY_REJECTED)")
+
+
+def test_a_batch_that_answers_nothing_is_still_not_an_error(seeded):
+    """The flag does not count failures. Every section failing is the same
+    kind of answer as one section failing, and it says *which* question died
+    of *what* — where one raised code would have had to stand for two
+    unrelated refusals and name only the first."""
+    text = call(
+        seeded, "run_query", channel="@chan",
+        queries=[
+            {"sql": "DROP TABLE posts", "label": "one"},
+            {"sql": "SELECT nope FROM posts", "label": "two"},
+        ],
+    )
+    assert "## 1. one" in text and "## 2. two" in text
+    assert text.count("**failed**") == 2
+
+
+def test_a_lone_unlabelled_query_renders_as_the_bare_table(seeded):
+    """`queries` carries the single question too, and there a section number
+    orders nothing — the most common call must not pay for the batch's
+    scaffolding."""
+    text = call(seeded, "run_query", channel="@chan", queries=[{"sql": "SELECT 1 AS one"}])
+    assert text.startswith("| one |")
+    assert "##" not in text
 
 
 def test_a_flood_wait_carries_its_seconds(tmp_path):
@@ -425,7 +486,7 @@ def test_a_project_with_no_data_is_told_to_scrape_rather_than_offered_nothing(
 def test_the_payload_is_json_in_the_text_block_not_structured_content(server):
     """#12: Claude Code discards `content` whenever `structuredContent` is
     present, so the machine-readable half travels *inside* the text."""
-    payload = failure(server, "run_query", channel="@chan", sql="SELECT 1")
+    payload = failure(server, "run_query", channel="@chan", queries=[{"sql": "SELECT 1"}])
     assert isinstance(payload, dict)
 
 

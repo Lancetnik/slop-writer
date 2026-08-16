@@ -36,6 +36,19 @@ class QueryResult:
     rows: list[tuple]
 
 
+@dataclass
+class QueryFailure:
+    """One query's refusal, carried instead of raised.
+
+    A batch is a series of *independent* questions, so one bad SQL must not
+    discard the answers to the others — the caller would have to re-ask all of
+    them, which is exactly the round-trip the batch existed to avoid. Batch-wide
+    conditions (no DB at all) still raise: there is no partial answer there."""
+    message: str
+    hint: str | None
+    code: str
+
+
 def _strip_leading_comments(sql: str) -> str:
     prev = None
     cur = sql.lstrip()
@@ -92,13 +105,9 @@ def schema_listing(conn: sqlite3.Connection) -> str:
     return "\n".join(lines)
 
 
-def run_query(sql: str, channel: str, output_dir: Path) -> QueryResult:
-    """Run a read-only SQL query against the channel's SQLite DB.
-
-    The DB is opened in read-only mode, so writes and schema changes are
-    rejected by SQLite itself - safe to expose to LLM-generated SQL."""
-    validate_read_only(sql)
-
+def _open_ro(channel: str, output_dir: Path) -> sqlite3.Connection:
+    """Read-only connection, or the one error that is about the *database*
+    rather than about any single query."""
     db_path = db_path_for(output_dir, channel)
     if not db_path.exists():
         raise SlopWriterError(
@@ -106,24 +115,50 @@ def run_query(sql: str, channel: str, output_dir: Path) -> QueryResult:
             hint=f"Scrape {channel} first — the DB is created by the first run.",
             code="NO_DATA",
         )
+    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
 
-    uri = f"file:{db_path}?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True)) as conn:
-        try:
-            cursor = conn.execute(sql)
-        except sqlite3.DatabaseError as e:
-            # The schema dump exists precisely for the one-shot retry, so it
-            # rides along with the error rather than going to a channel the
-            # caller may not be reading.
-            listing = (
-                schema_listing(conn)
-                if "no such column" in str(e) or "no such table" in str(e)
-                else None
-            )
-            raise SlopWriterError(
-                f"query failed: {e}", hint=listing, code="QUERY_REJECTED"
-            ) from None
-        columns = [d[0] for d in cursor.description or []]
-        rows = cursor.fetchall()
 
-    return QueryResult(columns, rows)
+def _run_one(conn: sqlite3.Connection, sql: str) -> QueryResult | QueryFailure:
+    try:
+        validate_read_only(sql)
+        cursor = conn.execute(sql)
+    except SlopWriterError as e:
+        return QueryFailure(e.message, e.hint, e.code or "QUERY_REJECTED")
+    except sqlite3.DatabaseError as e:
+        # The schema dump exists precisely for the one-shot retry, so it
+        # rides along with the error rather than going to a channel the
+        # caller may not be reading.
+        listing = (
+            schema_listing(conn)
+            if "no such column" in str(e) or "no such table" in str(e)
+            else None
+        )
+        return QueryFailure(f"query failed: {e}", listing, "QUERY_REJECTED")
+    return QueryResult([d[0] for d in cursor.description or []], cursor.fetchall())
+
+
+def run_queries(
+    sqls: list[str], channel: str, output_dir: Path
+) -> list[QueryResult | QueryFailure]:
+    """Run several read-only queries against one channel's DB, in order.
+
+    One connection serves the whole batch — the DB is opened in read-only mode,
+    so writes and schema changes are rejected by SQLite itself, safe to expose
+    to LLM-generated SQL. Results are positional: item *i* answers `sqls[i]`,
+    successfully or not, so a caller can always line an answer up with its
+    question."""
+    with closing(_open_ro(channel, output_dir)) as conn:
+        return [_run_one(conn, sql) for sql in sqls]
+
+
+def run_query(sql: str, channel: str, output_dir: Path) -> QueryResult:
+    """Run a read-only SQL query against the channel's SQLite DB.
+
+    The single-query form of `run_queries`, and the one that *raises*. It exists
+    for the CLI, whose report of a failure is a non-zero exit and a line on
+    stderr — there is no section for a refusal to travel in. The server takes
+    the batch form even for one question, because there a verdict is content."""
+    (item,) = run_queries([sql], channel, output_dir)
+    if isinstance(item, QueryFailure):
+        raise SlopWriterError(item.message, hint=item.hint, code=item.code)
+    return item

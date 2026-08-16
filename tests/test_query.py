@@ -10,7 +10,13 @@ import pytest
 
 from slop_writer.db import SCHEMA, db_path_for
 from slop_writer.errors import SlopWriterError
-from slop_writer.query import run_query, schema_listing, validate_read_only
+from slop_writer.query import (
+    QueryFailure,
+    run_queries,
+    run_query,
+    schema_listing,
+    validate_read_only,
+)
 
 ACCEPTED = [
     "SELECT 1",
@@ -160,3 +166,58 @@ def test_listing_includes_generated_columns(conn):
     listing = schema_listing(conn)
     assert "author" in listing
     assert "Full docs: references/schema.md" in listing
+
+
+# ---------------------------------------------------------------------------
+# Batches. The single-query form raises; the batch form carries a refusal in
+# the position it belongs to, because the other answers are still good.
+# ---------------------------------------------------------------------------
+
+
+def test_a_batch_answers_positionally(db):
+    items = run_queries(
+        [
+            "SELECT COUNT(*) FROM posts",
+            "SELECT id, text FROM posts ORDER BY id",
+        ],
+        "@fastnewsdev",
+        db,
+    )
+    assert [i.rows for i in items] == [[(2,)], [(1, "hello"), (2, "world")]]
+
+
+def test_one_bad_query_does_not_discard_its_siblings(db):
+    """The whole point of a batch: a failure costs one section, not the
+    round trip that produced all of them."""
+    ok, bad, also_ok = run_queries(
+        [
+            "SELECT COUNT(*) FROM posts",
+            "SELECT no_such_col FROM posts",
+            "SELECT text FROM posts WHERE id = 1",
+        ],
+        "@fastnewsdev",
+        db,
+    )
+    assert ok.rows == [(2,)]
+    assert also_ok.rows == [("hello",)]
+    assert isinstance(bad, QueryFailure)
+    assert bad.code == "QUERY_REJECTED"
+    assert "Available tables/columns:" in (bad.hint or "")
+
+
+def test_a_rejected_statement_is_a_failure_not_a_raise(db):
+    """`validate_read_only` runs per item, so a DELETE in the middle of a
+    batch refuses in place rather than taking the batch down."""
+    ok, bad = run_queries(
+        ["SELECT 1", "DELETE FROM posts"], "@fastnewsdev", db
+    )
+    assert ok.rows == [(1,)]
+    assert isinstance(bad, QueryFailure)
+    assert bad.code == "QUERY_REJECTED"
+
+
+def test_a_missing_database_still_raises_for_the_whole_batch(tmp_path):
+    """Batch-wide conditions have no partial answer to protect."""
+    with pytest.raises(SlopWriterError) as exc:
+        run_queries(["SELECT 1", "SELECT 2"], "@never-scraped", tmp_path)
+    assert exc.value.code == "NO_DATA"
