@@ -13,7 +13,11 @@ import textwrap
 import tomllib
 from pathlib import Path
 
+import pytest
+
 import slop_writer
+from slop_writer.cli import main
+from slop_writer.install import package_version
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -94,6 +98,21 @@ def test_the_skill_version_is_the_package_version():
         f"SKILL.md says {declared.group(1)}, pyproject.toml says "
         f"{pyproject['project']['version']} — a release bumps both"
     )
+
+
+def test_the_cli_reports_that_version_without_a_subcommand(capsys):
+    """`slop-writer --version` answers on its own, despite `command` being a
+    required argument: argparse's version action exits during parsing, before
+    the required-subcommand check runs.
+
+    That is the whole point of the flag — someone asking which release is
+    installed has no verb in mind, and a usage error would answer a question
+    nobody asked."""
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--version"])
+
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.strip() == f"slop-writer {package_version()}"
 
 
 def test_the_query_path_stays_importable_without_telethon():

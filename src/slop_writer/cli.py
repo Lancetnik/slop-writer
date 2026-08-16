@@ -39,7 +39,7 @@ from .init import (
     verify_session,
     write_env,
 )
-from .install import install_project, uninstall_project
+from .install import install_project, package_version, uninstall_project
 from .render import summarize_install, summarize_uninstall
 from .server import assert_text_only, build_server
 
@@ -201,6 +201,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="slop-writer",
         description="Telegram channel analytics: MCP server and project setup.",
+    )
+    # The same version the MCP handshake reports and the skill's frontmatter
+    # copies — one string covering package and skill (#21). It answers before
+    # the required subcommand does, so `slop-writer --version` stands alone:
+    # argparse's version action exits during parsing, and a user asking which
+    # release is installed has no verb in mind.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {package_version()}",
+        help="Print the installed version and exit.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
