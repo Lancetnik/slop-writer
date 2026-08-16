@@ -59,6 +59,26 @@ def _strip_leading_comments(sql: str) -> str:
     return cur
 
 
+def _has_second_statement(body: str) -> bool:
+    """True when `body` carries SQL past its first statement terminator.
+
+    A plain `';' in body` scan cannot tell a terminator from a semicolon inside
+    a string literal or a trailing comment, and refusing `LIKE '%;%'` is a pure
+    loss: this guard exists for a clear early error, not for safety (`?mode=ro`
+    is the write barrier), so a false refusal closes no hole and costs a valid
+    question. `sqlite3.complete_statement` is SQLite's own quote- and
+    comment-aware answer to "does this end a statement?", which keeps the check
+    stdlib-only instead of growing a SQL parser here.
+    """
+    for index, char in enumerate(body):
+        if char != ";" or not sqlite3.complete_statement(body[: index + 1]):
+            continue
+        # Comments and whitespace after the terminator are not a statement.
+        if _strip_leading_comments(body[index + 1 :]):
+            return True
+    return False
+
+
 def validate_read_only(sql: str) -> None:
     """Reject anything that isn't a single SELECT/WITH query.
 
@@ -76,8 +96,7 @@ def validate_read_only(sql: str) -> None:
         )
     # Reject obvious multi-statement payloads like `SELECT 1; DROP TABLE posts`.
     # A trailing single `;` is fine. A semicolon followed by more SQL is not.
-    trimmed = body.rstrip().rstrip(";").rstrip()
-    if ";" in trimmed:
+    if _has_second_statement(body):
         raise SlopWriterError(
             "rejected query: multi-statement queries are not allowed",
             code="QUERY_REJECTED",

@@ -31,6 +31,14 @@ ACCEPTED = [
     "/* block */ SELECT 1",
     "/* multi\n   line */\nSELECT 1",
     "-- mixed\n/* both kinds */ -- again\nSELECT 1",
+    # A `;` that isn't a terminator: the channel's own posts contain them, so
+    # a scan blind to quoting refuses the only query that can find those posts.
+    "SELECT 'a;b' AS x",
+    "SELECT COUNT(*) AS n FROM posts WHERE text LIKE '%;%'",
+    'SELECT "a;b" AS x',                        # quoted identifier
+    "SELECT 1 /* mid;dle */ FROM posts",
+    "SELECT COUNT(*) FROM posts -- count posts; then forwards",
+    "SELECT 'a;b' AS x;",                       # literal *and* a terminator
 ]
 
 REJECTED = [
@@ -49,6 +57,10 @@ REJECTED = [
     "SELECT 1; DROP TABLE posts",
     "SELECT 1; SELECT 2",
     "-- sneaky\nSELECT 1; DELETE FROM posts;",
+    # A literal semicolon earlier in the query hides nothing: the terminator
+    # after it is still a terminator.
+    "SELECT 'a;b'; DROP TABLE posts",
+    "SELECT 1; SELECT 2 -- trailing comment",
 ]
 
 
