@@ -166,13 +166,16 @@ def normalize_channel(handle: str) -> str:
 # --------------------------------------------------------------------------
 
 
+# A model's docstring ships as its schema `description`, and this one rides on
+# the only always-loaded tool — so it is addressed to the model, and the
+# rationale stays out here where a reader of the code is the one paying for it.
+#
+# `label` is optional because `queries` carries the single-question case too,
+# and there a label names something the caller is still holding. It earns its
+# place from two questions up: the answers come back as sections and the SQL
+# that produced each is no longer in front of the reader.
 class Query(BaseModel):
-    """One question: the SQL, and optionally a short name for what it answers.
-
-    `label` is optional because `queries` carries the single-question case too,
-    and there a label names something the caller is still holding. It earns its
-    place from two questions up: the answers come back as sections and the SQL
-    that produced each is no longer in front of the reader."""
+    """One question: the SQL, and optionally a short name for what it answers."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -587,27 +590,19 @@ def build_server(project_root: Path) -> FastMCP:
         meta={"anthropic/alwaysLoad": True},
         description=(
             "Run read-only SQL against a channel's scraped database and get "
-            "Markdown tables back. This is how every analytics question gets "
-            "answered — scrape once, then query.\n"
-            "`queries` is a LIST, and asking several questions at once is the "
-            "normal use: every question that does not need a value from "
-            "another's answer belongs in the same call, which costs one round "
-            "trip instead of one each. Ask separately only when the SQL "
-            "genuinely depends on what came back.\n"
-            "Each item is `{sql, label}` — a single SELECT or WITH statement, "
-            "anything else rejected and the database opened read-only "
-            "regardless, plus a few words naming what it answers. Aggregate in "
-            "SQL rather than pulling rows and counting by hand. Two or more "
-            "questions come back as numbered sections under those labels.\n"
-            "`limit` caps the RENDERED rows per query (default 50, max 500); "
-            "the true row count is always reported, so a clipped answer is "
-            "always visible as one. `truncate_cells=false` prints long text in "
-            "full — needed to read post bodies, and the fastest way to blow "
-            "the output cap.\n"
-            "Requires a prior scrape of that channel. A query naming a table "
-            "or column that does not exist comes back with the schema "
-            "attached, so one retry is usually enough; it fails in its own "
-            "section and the others still answer."
+            "Markdown tables back — how every analytics question is answered, "
+            "once that channel has been scraped.\n"
+            "`queries` is a LIST, and batching is the normal use: every "
+            "question that does not need a value from another's answer goes in "
+            "the same call, which costs one round trip instead of one each.\n"
+            "Aggregate in SQL rather than pulling rows and counting by hand. "
+            "`limit` caps the RENDERED rows per query; the true row count is "
+            "always reported, so a clipped answer is visible as one. "
+            "`truncate_cells=false` prints long text in full — needed to read "
+            "post bodies, and the fastest way to blow the output cap.\n"
+            "A query naming a table or column that does not exist comes back "
+            "with the schema attached, so one retry is usually enough; it "
+            "fails in its own section and the others still answer."
         ),
     )
     async def run_query(

@@ -74,6 +74,16 @@ query can do to itself is that query's answer.
   it against the questions the caller still holds. But `queries` carries the
   single-question case too, and there a heading names something the caller asked
   one step ago and has not forgotten.
+- **This tool's description and schema are the hot path, and nothing else's
+  is.** `run_query` is the only always-loaded tool, so its ~470 tokens are paid
+  every turn while the other ten cost nothing until `ToolSearch` fetches one —
+  83% of the roster's text is free until asked for. Two consequences follow.
+  A Pydantic model's **docstring ships as its schema `description`**, so
+  rationale written for a reader of the code (`Query`'s original docstring) was
+  being billed to the model on every turn; here it lives in a comment above the
+  class instead. And the description must not restate what the `Field`s already
+  carry — the schema is machine-readable and cannot drift from itself, whereas
+  a second copy in prose can.
 - **The skill needed no edit.** The seam holds — no metric fact in a tool
   description, no argument name in the skill — so a change that is entirely
   about an argument's arity touches `server.py` and nothing under `skills/`.
