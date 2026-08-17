@@ -105,6 +105,26 @@ def permission_rules() -> dict[str, list[str]]:
         "ask": [f"mcp__{SERVER_NAME}__{name}" for name in WRITE_TOOLS],
     }
 
+
+def codex_approval_rules() -> dict[str, dict[str, str]]:
+    """The same gate in Codex's vocabulary: the `tools` tables `install`
+    writes under `[mcp_servers.slop-writer]` in `.codex/config.toml`.
+
+    A sibling of `permission_rules` rather than a translation living in
+    `install.py`, for the reason that put the first one here: the gate and the
+    roster are one fact, and a second module is a second place to forget. The
+    two emitters spell the same three names differently — Claude Code matches
+    `mcp__slop-writer__publish_edit`, Codex matches the bare `publish_edit`
+    under its own server — and `tests/test_server.py` compares both against the
+    roster and against each other (adr/0008).
+
+    `prompt` is the only value that fits: Codex's `approval_mode` accepts
+    `auto`, `prompt`, `writes` and `approve`, and none of them is a deny. This
+    axis can put a human in front of a Telegram write; it cannot forbid one.
+
+    A returned dict, for the same reason as above."""
+    return {name: {"approval_mode": "prompt"} for name in WRITE_TOOLS}
+
 # The two failures whose remedy is a human at a terminal. The domain's own
 # hints name the CLI's remedy (a setup skill, a script path); the server's
 # remedy is `slop-writer init`, and picking it here rather than parameterising

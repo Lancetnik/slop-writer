@@ -623,30 +623,18 @@ def summarize_install(result) -> str:
     from .install import SERVER_NAME, other_client_entry
 
     root = result.project_root
-    out = [f"Wired {SERVER_NAME} {result.version} into {root}", ""]
-    out.append(f"  {result.mcp_config.relative_to(root)} — server entry "
-               f"(overwritten every install; that is the upgrade path)")
-    skill_rel = result.skill_target.relative_to(root)
-    out.append(f"  {skill_rel} — skill, "
-               f"{'replaced' if result.skill_existed else 'installed'}")
-    if result.legacy_skill_removed is not None:
-        # Deleting something the user did not ask us to delete is exactly the
-        # kind of thing that must not be silent (#34).
-        out.append(f"  {result.legacy_skill_removed.relative_to(root)} — "
-                   f"removed: this skill's pre-0.4 directory, which would "
-                   f"otherwise load alongside the current one")
-    if result.permissions_seeded:
-        out.append(f"  {result.settings.relative_to(root)} — permissions: "
-                   f"reads allowed, publishing behind a prompt")
-        out.append(f"  {result.memory_file.relative_to(root)} — address block "
-                   f"so subagents find the skill")
-    else:
-        # Seeding on every run would silently restore an `ask` rule the human
-        # deliberately removed — headless autoposting is a supported choice.
-        out.append("  (permissions and CLAUDE.md left alone — seeded on first "
-                   "install only, so your edits survive an upgrade)")
-        out.append("  publishing tools this version expects under `ask`: "
-                   + ", ".join(result.ask_tools))
+    out = [f"Wired {SERVER_NAME} {result.version} into {root}"]
+    for client in result.clients:
+        out.append("")
+        out.extend(_install_section(client, root))
+
+    out.append("")
+    out.append("Every agent, whichever client you wired:")
+    out.append(f"  {result.agents_file.relative_to(root)} — address block so an "
+               f"agent with no skills listing can find the skill"
+               + ("" if result.agents_block_written else " (already there)"))
+    out.append(f"  {result.shared_skill_target.relative_to(root)} — skill, "
+               f"{'replaced' if result.shared_skill_existed else 'installed'}")
 
     if result.skills_lock_names:
         from .install import LEGACY_SKILL_DIR_NAME
@@ -672,23 +660,78 @@ def summarize_install(result) -> str:
                    "`which slop-writer`.")
 
     out.append("")
-    out.append("Verified on Claude Code only. For Cursor, Codex or the Copilot "
-               "coding agent, paste this into their MCP config yourself:")
+    out.append("Cursor and the Copilot coding agent are not written for: their "
+               "launch directory is unverified, so paste this into their MCP "
+               "config yourself.")
     out.append("")
     out.append(other_client_entry())
     out.append("")
-    out.append("Next: restart your MCP client (.mcp.json is read at session "
-               "start only), and run `slop-writer init` to log in to Telegram.")
+    out.append("Next: restart your MCP client (project configuration is read at "
+               "session start only), and run `slop-writer init` to log in to "
+               "Telegram.")
     return "\n".join(out)
+
+
+def _install_section(client, root) -> list[str]:
+    """One client's half of the project, named as that client's own files.
+
+    A section per client rather than one merged list: first install, the
+    artifacts and the "already existed" facts differ per client, so a merged
+    report would say something true of neither."""
+    from .install import CODEX
+
+    state = "first install" if client.first_install else "already wired, upgraded"
+    out = [f"{client.client} — {state}"]
+    out.append(f"  {client.config_file.relative_to(root)} — server entry "
+               f"(overwritten every install; that is the upgrade path)")
+    if client.skill_target is not None:
+        out.append(f"  {client.skill_target.relative_to(root)} — skill, "
+                   f"{'replaced' if client.skill_existed else 'installed'}")
+    if client.legacy_skill_removed is not None:
+        # Deleting something the user did not ask us to delete is exactly the
+        # kind of thing that must not be silent (#34).
+        out.append(f"  {client.legacy_skill_removed.relative_to(root)} — "
+                   f"removed: this skill's pre-0.4 directory, which would "
+                   f"otherwise load alongside the current one")
+    if client.gate_seeded:
+        out.append(f"  {client.gate_file.relative_to(root)} — approval gate: "
+                   f"reads allowed, publishing behind a prompt")
+        if client.address_block_written and client.address_file is not None:
+            out.append(f"  {client.address_file.relative_to(root)} — address "
+                       f"block so subagents find the skill")
+    else:
+        # Seeding on every run would silently restore a rule the human
+        # deliberately removed — headless autoposting is a supported choice.
+        out.append(f"  (the gate in {client.gate_file.relative_to(root)} left "
+                   f"alone — seeded on first install only, so your edits "
+                   f"survive an upgrade)")
+        out.append("  publishing tools this version expects behind a prompt: "
+                   + ", ".join(client.gate_tools))
+    if client.client == CODEX:
+        # Silent by policy rather than by fault is the one failure a user
+        # cannot diagnose from anything this command writes.
+        out.append("  ! Codex ignores a project's configuration until you "
+                   "trust the directory, and that trust lives in your own "
+                   "global config — so a fresh clone stays silent until you "
+                   "answer Codex's trust prompt in this directory.")
+    return out
 
 
 def summarize_uninstall(result) -> str:
     """What `uninstall` removed, and — more usefully — what it did not."""
-    out = [f"Removed slop-writer's wiring from {result.project_root}", ""]
-    if result.removed:
-        out.extend(f"  {item}" for item in result.removed)
-    else:
-        out.append("  (nothing to remove — was it installed in this project?)")
+    out = [f"Removed slop-writer's wiring from {result.project_root}"]
+    for client in result.clients:
+        out.append("")
+        out.append(f"{client.client}:")
+        if client.removed:
+            out.extend(f"  {item}" for item in client.removed)
+        else:
+            out.append("  (nothing to remove — was it installed for this "
+                       "client?)")
+    if result.shared_removed:
+        out.append("")
+        out.append("Every agent:")
+        out.extend(f"  {item}" for item in result.shared_removed)
     if result.kept:
         out.append("")
         out.append("Kept:")

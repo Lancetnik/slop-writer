@@ -39,7 +39,7 @@ from .init import (
     verify_session,
     write_env,
 )
-from .install import install_project, package_version, uninstall_project
+from .install import CLIENTS, install_project, package_version, uninstall_project
 from .render import summarize_install, summarize_uninstall
 from .server import assert_text_only, build_server
 
@@ -64,12 +64,12 @@ def _project_root(args: argparse.Namespace) -> Path:
 
 
 def _install(args: argparse.Namespace) -> int:
-    print(summarize_install(install_project(_project_root(args))))
+    print(summarize_install(install_project(_project_root(args), args.client)))
     return 0
 
 
 def _uninstall(args: argparse.Namespace) -> int:
-    print(summarize_uninstall(uninstall_project(_project_root(args))))
+    print(summarize_uninstall(uninstall_project(_project_root(args), args.client)))
     return 0
 
 
@@ -218,21 +218,40 @@ def main(argv: list[str] | None = None) -> int:
     def _add_project_flag(p: argparse.ArgumentParser, what: str) -> None:
         p.add_argument("--project", metavar="PATH", help=f"Project root {what}.")
 
+    def _add_client_flag(p: argparse.ArgumentParser, what: str) -> None:
+        # Repeatable rather than comma-separated: one command can wire both,
+        # and `choices` answers a typo with the roster instead of writing
+        # nothing and reporting success.
+        p.add_argument(
+            "--client",
+            action="append",
+            choices=CLIENTS,
+            metavar="NAME",
+            help=f"MCP client to {what}, repeatable "
+            f"({', '.join(CLIENTS)}).",
+        )
+
     install = sub.add_parser(
         "install",
-        help="Wire this project's Claude Code config to the MCP server.",
-        description="Writes the .mcp.json entry, the skill, and — on first "
-        "install only — the permission block and the CLAUDE.md address block. "
-        "Knows nothing about Telegram; run `init` for that, in either order.",
+        help="Wire this project's MCP client config to the server.",
+        description="Writes the client's server entry, the skill, and — on "
+        "first install only — its approval gate and address block, plus the "
+        "cross-agent AGENTS.md block and .agents/skills/ copy whichever client "
+        "was named. Knows nothing about Telegram; run `init` for that, in "
+        "either order.",
     )
     _add_project_flag(install, "to wire (default: the current directory)")
+    _add_client_flag(install, "wire (default: claude)")
     install.set_defaults(func=_install)
 
     uninstall = sub.add_parser(
         "uninstall",
         help="Remove what `install` wrote. Never touches .tg-analytic/.",
+        description="With no --client this removes every client's wiring and "
+        "the cross-agent pair; narrowed to one, it leaves the others alone.",
     )
     _add_project_flag(uninstall, "to unwire (default: the current directory)")
+    _add_client_flag(uninstall, "unwire (default: all of them)")
     uninstall.set_defaults(func=_uninstall)
 
     init = sub.add_parser(

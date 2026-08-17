@@ -1,15 +1,21 @@
 # slop-writer
 
-An MCP server and a Claude Code skill that scrape a Telegram channel into a
-per-channel SQLite DB and answer analytics questions over it. They can also
-queue a future post to the channel (the one write capability; everything else
-only reads).
+An MCP server and a skill that scrape a Telegram channel into a per-channel
+SQLite DB and answer analytics questions over it. They can also queue a future
+post to the channel (the one write capability; everything else only reads).
+`install` wires them into a **client**, of which there is more than one.
 
 ## Language
 
 **Project**:
 The directory the server runs in — one `.tg-analytic/`, and the unit of
 state. Holds any number of scraped channels, one of which is primary.
+
+**Client**:
+The MCP client whose project configuration `install` writes — Claude Code or
+Codex. One project can be wired for more than one, and each is wired
+independently: what a project holds for one client says nothing about another.
+_Avoid_: agent, host, editor, IDE
 
 **Channel**:
 The Telegram broadcast channel being analyzed (e.g. @fastnewsdev). Posts

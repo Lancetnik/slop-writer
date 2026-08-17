@@ -1,11 +1,12 @@
 # tg-scraper / slop-writer
 
-A Claude Code **skill plus an MCP server** that analyze a Telegram channel and
-can queue a post to it. The eleven MCP tools are the whole agent-facing
-surface; the skill under `skills/slop-writer/` says which tool answers which
-question and what the numbers mean. Published to PyPI as `slop-writer`; two
-install channels (`slop-writer install`, `npx skills@latest add …`) serve that
-same skill directory, and one version covers package and skill.
+A **skill plus an MCP server** that analyze a Telegram channel and can queue a
+post to it. The eleven MCP tools are the whole agent-facing surface; the skill
+under `skills/slop-writer/` says which tool answers which question and what the
+numbers mean. Published to PyPI as `slop-writer`; two install channels
+(`slop-writer install`, `npx skills@latest add …`) serve that same skill
+directory, and one version covers package and skill. `install` wires it into a
+**client** — Claude Code or Codex, each independently (adr/0008).
 
 Rationale for a decision lives in `docs/adr/`; vocabulary in `CONTEXT.md`;
 structure (what calls what, where a symbol is) in codegraph.
@@ -18,8 +19,9 @@ structure (what calls what, where a symbol is) in codegraph.
   `SCHEMA` or `references/schema.md`. CI runs it as its own step.
 - `uv run --with-editable . tools/tg_*.py` — the dev CLIs against the tree.
 - `slop-writer` (the shipped console script): `install` wires this project's
-  Claude Code config, `uninstall` removes exactly what it wrote, `serve --mcp`
-  runs the server over stdio, `init` writes Telegram credentials and logs in.
+  client config (`--client claude|codex`, repeatable; bare = claude),
+  `uninstall` removes exactly what it wrote, `serve --mcp` runs the server over
+  stdio, `init` writes Telegram credentials and logs in.
   **`init` needs a TTY for the SMS code — the user runs it, not the agent.**
 
 ## Library rules (`src/slop_writer/`)
@@ -60,7 +62,16 @@ structure (what calls what, where a symbol is) in codegraph.
   account — one is fixed by correcting the handle, the other by joining. Every
   new Telethon call that can refuse classifies the two.
 - `cli.py` is **argparse**, so an installed server carries no CLI framework;
-  typer stays a `tools/` script dependency.
+  typer stays a `tools/` script dependency. `install.py` reads TOML with
+  `tomllib` and writes it with a local emitter for the same reason — no runtime
+  dependency for one config format (adr/0008).
+- **A client is selected, never detected**, and each is wired independently:
+  `install_project`/`uninstall_project` take the selection, return one result
+  per client, and read first-install from *that client's* own config key. A new
+  client adds an installer, an uninstaller and a renderer section — plus its
+  gate emitter in `server.py`. The cross-agent pair (`AGENTS.md` block,
+  `.agents/skills/`) belongs to no client: written on every install, removed
+  only by an unnarrowed uninstall.
 - `.tg-analytic/` is runtime state at the project root (gitignored): `.env`,
   `session.session`, one `<channel>.db` per channel, `media/`. **Entrypoints**
   anchor it on the cwd (`--project` overrides); the library never reads the cwd.
@@ -68,9 +79,12 @@ structure (what calls what, where a symbol is) in codegraph.
 ## MCP server (`server.py`)
 
 - **The `publish_` prefix is the read/write split**, not a naming style: Claude
-  Code matches permission rules by tool *name*. Roster and `permission_rules()`
-  live in one module because a renamed tool without its rule is silently
-  ungated; `tests/test_server.py` compares the halves.
+  Code matches permission rules by tool *name*. Roster, `permission_rules()`
+  and `codex_approval_rules()` live in one module because a renamed tool
+  without its rule is silently ungated; `tests/test_server.py` compares all
+  three. **A new client adds an emitter here, never a translation in
+  `install.py`** (adr/0008) — the module that decides which tools write is the
+  one that says who approves them.
 - **Text only, never `structuredContent`** — Claude Code drops the content
   blocks when structure is present, so structure travels *inside* text. Register
   through the local `_tool` wrapper (`structured_output=False`);
@@ -182,7 +196,16 @@ inputs. `--caption-above` rides an `invert_media` monkey patch.
   so `install` can copy it out; it cannot live under `src/slop_writer/`, since
   `npx skills add` serves the same directory from the repo root.
   `install.skill_source()` tries the source checkout **first** — an editable
-  install materialises the data directory once and never refreshes it.
+  install materialises the data directory once and never refreshes it. **One
+  source, several destinations**: a project holds the skill under
+  `.claude/skills/` *and* `.agents/skills/`, so "one directory" is now true of
+  the source only (adr/0008).
 - Pins that carry a reason: `mcp>=1.10,<2` (`structured_output=False` is
   load-bearing and v2 moved `FastMCP`), `telethon>=1.36,<2` (client API, not the
   bot API).
+
+<!-- slop-writer:start -->
+Telegram channel analytics goes through the `mcp__slop-writer__*` tools.
+Read `.claude/skills/slop-writer/SKILL.md` before calling one — it routes to the metric
+invariants and the DB schema, without which the numbers come back wrong.
+<!-- slop-writer:end -->
