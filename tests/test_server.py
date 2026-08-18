@@ -40,6 +40,7 @@ from slop_writer.server import (
     _window,
     assert_text_only,
     build_server,
+    codex_approval_rules,
     normalize_channel,
     permission_rules,
 )
@@ -202,6 +203,45 @@ def test_permission_rules_cannot_be_mutated_between_callers():
     rules = permission_rules()
     rules["ask"].clear()
     assert permission_rules()["ask"]
+
+
+def test_the_codex_approval_tables_name_tools_that_exist(tools):
+    """The second client's gate, held to the first one's standard: a table
+    naming no tool is a gate over nothing."""
+    for name in codex_approval_rules():
+        assert name in tools
+
+
+def test_every_telegram_write_is_gated_in_codex_and_nothing_else_is(tools):
+    """The direction that matters, again: a new `publish_*` tool added without
+    its approval table fails here rather than shipping ungated on one client."""
+    gated = set(codex_approval_rules())
+    assert gated == {name for name in tools if name.startswith("publish_")}
+    assert gated.isdisjoint(READ_TOOLS)
+
+
+def test_the_two_gates_name_the_same_three_tools():
+    """One roster, two client vocabularies. Claude Code matches a prefixed
+    rule name, Codex a bare tool key under its server — and the emitters are
+    two spellings of one fact, which is why they live in this module."""
+    claude = {rule.rsplit("__", 1)[-1] for rule in permission_rules()["ask"]}
+    assert claude == set(codex_approval_rules())
+
+
+def test_the_codex_gate_asks_and_never_forbids(tools):
+    """`approval_mode` has no deny value: this axis can only put a human in
+    front of the call. Pinned so that a future edit to a stronger-sounding
+    mode is a deliberate one."""
+    assert all(
+        table == {"approval_mode": "prompt"}
+        for table in codex_approval_rules().values()
+    )
+
+
+def test_codex_approval_rules_cannot_be_mutated_between_callers():
+    rules = codex_approval_rules()
+    rules.clear()
+    assert codex_approval_rules()
 
 
 def test_a_telegram_write_is_never_annotated_read_only(tools):

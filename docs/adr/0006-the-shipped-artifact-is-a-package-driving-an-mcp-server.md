@@ -103,3 +103,27 @@ write gate, 0005 for what the router routes to — so nothing here restates them
   tool description, no argument name in the skill. That is what keeps a new
   tool from re-growing the text this move removed — a description has no room
   for a metric caveat, and the skill has no vocabulary for flags.
+
+## Amended in 0.5 (Lancetnik/slop-writer, the Codex client)
+
+Two sentences above were written when `install` knew one client, and
+[0008](./0008-install-writes-more-than-one-client.md) makes them false as
+written. The decision they belong to is unchanged: the shipped artifact is
+still a package driving an MCP server, and the gate still arrives with the
+distribution rather than as homework. It now arrives for more than one client.
+
+- **"Both install channels serve the same directory into the same
+  `.claude/skills/slop-writer/`"** — still true of those two channels, but
+  `install` writes a second destination as well (`.agents/skills/`, which
+  belongs to no client), so a project holds more than one copy of the skill.
+  "There is one directory to win" no longer holds; one *source* does, and the
+  copies are written from it in one run.
+- **"#19 rejected shipping entries for Cursor, Codex and the Copilot coding
+  agent: their launch cwd is unverified"** — Codex leaves that list. Cursor and
+  the Copilot coding agent stay on it, and the printed entry stays printed and
+  stays labelled unverified.
+
+The claim that the gate "arrives with the distribution" was true of one client
+and homework for every other; 0008 closes that gap rather than overturning it,
+and adds the second emitter beside `permission_rules()` in the module that owns
+the roster — for the same reason the first one lives there.

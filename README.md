@@ -5,8 +5,9 @@
        alt="slop-writer" width="260">
 </picture>
 
-A [Claude Code](https://claude.com/claude-code) skill that analyzes a Telegram
-channel:
+An MCP server and a skill that analyze a Telegram channel, wired into
+[Claude Code](https://claude.com/claude-code) or
+[Codex](https://developers.openai.com/codex/cli) by one command:
 
 - Scrape posts (text, media, reactions, views, forwards, tags) and the comment
   threads under each.
@@ -32,7 +33,7 @@ Two commands, run from the project where you want the analytics.
 
 ```bash
 uv tool install slop-writer
-slop-writer install     # wires Claude Code: MCP server, permissions, the skill
+slop-writer install     # wires Claude Code: MCP server, approval gate, the skill
 slop-writer init        # Telegram credentials and the one-time login
 ```
 
@@ -41,10 +42,39 @@ slop-writer init        # Telegram credentials and the one-time login
 skill into `.claude/skills/slop-writer/`; everything it writes is printed. The
 `.mcp.json` entry holds no machine-specific path, so it is safe to commit — a
 teammate clones, runs `slop-writer init`, and is done. **Restart your MCP client
-afterwards**: `.mcp.json` is read at session start only.
+afterwards**: project configuration is read at session start only.
 
-Verified on Claude Code. For Cursor, Codex or the Copilot coding agent,
-`install` prints the entry for you to paste into their config yourself.
+### Codex, or both
+
+`--client` picks which MCP client gets wired, and it is repeatable:
+
+```bash
+slop-writer install --client codex
+slop-writer install --client claude --client codex
+```
+
+For Codex the equivalents land in one file, `.codex/config.toml`: the
+`[mcp_servers.slop-writer]` entry and, on first install only, an
+`approval_mode = "prompt"` table for each of the three publishing tools. Every
+install also writes an address block into `AGENTS.md` and a copy of the skill
+into `.agents/skills/slop-writer/`, whichever client you named — an agent that
+is neither can still find it.
+
+**Codex ignores a project's configuration until you trust the directory**, and
+that trust lives in your own global config, which this command never writes. So
+a teammate who clones the repository has to answer Codex's trust prompt in the
+directory once; `slop-writer init` is the only other step. The entry itself
+carries no machine-specific path either.
+
+Each client is wired independently: what a project holds for one says nothing
+about another, and "first install" is a property of a client. Cursor and the
+Copilot coding agent are still not written for — their launch directory is
+unverified — so `install` prints an entry for you to paste into their config
+yourself.
+
+`slop-writer uninstall` with no flag removes every client's wiring; narrowed
+with `--client` it leaves the others alone. Neither form ever touches
+`.tg-analytic/`.
 
 `init` asks for your Telegram API credentials
 ([create them here](https://my.telegram.org/apps)), writes `.tg-analytic/.env`,
@@ -53,9 +83,6 @@ SMS code and 2FA password on stdin, so it cannot go through a tool call. It is
 additive and safe to re-run: it prompts only for what is missing and logs in
 only when there is no working session. The two commands are independent and work
 in either order.
-
-`slop-writer uninstall` removes exactly what `install` wrote, and never touches
-`.tg-analytic/`.
 
 The skill alone, without the server, still installs through the
 [`skills`](https://dev.to/baltz/sharing-skills-with-npx-2nbc) CLI:
@@ -73,7 +100,7 @@ is a live login to your Telegram account.
 
 ## Usage
 
-Inside Claude Code, ask in plain language:
+Inside your client, ask in plain language:
 
 > Analyze @some_channel — show me the most popular posts.
 > Who's forwarding @some_channel? Which channels do they cite most often?
