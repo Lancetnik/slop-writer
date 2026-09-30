@@ -107,7 +107,7 @@ write gate, 0005 for what the router routes to — so nothing here restates them
 ## Amended in 0.5 (Lancetnik/slop-writer, the Codex client)
 
 Two sentences above were written when `install` knew one client, and
-[0008](./0008-install-writes-more-than-one-client.md) makes them false as
+[0009](./0009-install-writes-more-than-one-client.md) makes them false as
 written. The decision they belong to is unchanged: the shipped artifact is
 still a package driving an MCP server, and the gate still arrives with the
 distribution rather than as homework. It now arrives for more than one client.
@@ -124,6 +124,6 @@ distribution rather than as homework. It now arrives for more than one client.
   stays labelled unverified.
 
 The claim that the gate "arrives with the distribution" was true of one client
-and homework for every other; 0008 closes that gap rather than overturning it,
+and homework for every other; 0009 closes that gap rather than overturning it,
 and adds the second emitter beside `permission_rules()` in the module that owns
 the roster — for the same reason the first one lives there.

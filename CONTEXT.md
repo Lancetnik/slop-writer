@@ -2,8 +2,9 @@
 
 An MCP server and a skill that scrape a Telegram channel into a per-channel
 SQLite DB and answer analytics questions over it. They can also queue a future
-post to the channel (the one write capability; everything else only reads).
-`install` wires them into a **client**, of which there is more than one.
+post to the channel and ban subscribers an audit flagged (the two write
+capabilities; everything else only reads). `install` wires them into a
+**client**, of which there is more than one.
 
 ## Language
 
@@ -97,3 +98,21 @@ Telegram suppresses service messages during join bursts.
 A dated record of a user leaving the discussion group — self-leave,
 removed by an admin, or actor unknown (Telegram omits the actor e.g. when
 auto-removing deleted accounts). Same two sources as Join event.
+
+**Subscriber audit**:
+One read of the channel's admin log: every join and leave it still holds
+(~48h), and a profile snapshot of each account that joined in that window and
+has not left. The only source that names who subscribed to a channel — the
+stats API behind `subscribers` counts them and names nobody.
+_Avoid_: subscriber scan, member check
+
+**Bot signal**:
+One named trait an audited account shows that bot farms share and real
+subscribers rarely do (a shared last-seen minute, a generated username, …).
+Weighted and summed into a score; no single signal is a verdict.
+
+**Suspect**:
+An audited account whose score reaches `possible` or `likely`. A suggestion
+for the channel owner to review, never a finding: only a human decides who is
+banned.
+_Avoid_: bot (as a label for an account the audit merely scored)

@@ -613,6 +613,81 @@ def summarize_group(
     return "\n".join(out)
 
 
+def _account_label(a: dict) -> str:
+    name = _md_cell(a.get("name")) if a.get("name") else "—"
+    username = f" @{a['username']}" if a.get("username") else ""
+    return f"{name}{username}"
+
+
+def _audit_table(accounts: list[dict]) -> list[str]:
+    out = ["| user_id | Account | Joined | Last seen | Score | Signals |",
+           "|--------:|---------|--------|-----------|------:|---------|"]
+    for a in accounts:
+        seen = (a.get("was_online") or "")[:16].replace("T", " ") or (
+            a.get("status") or "—"
+        )
+        out.append(
+            f"| {a['user_id']} | {_account_label(a)} "
+            f"| {(a.get('joined') or '—')[:16].replace('T', ' ')} | {seen} "
+            f"| {a['score']} | {', '.join(a['signals']) or '—'} |"
+        )
+    return out
+
+
+def summarize_audit(channel: str, overview: dict, accounts: list[dict]) -> str:
+    """Render a subscriber audit: the suspects first, the rest counted.
+
+    The tiers are the domain's (`audit.verdict_of`); this only groups by them.
+    Clean accounts get a count and no table — listing forty real subscribers
+    to show that they are real buries the six that are not. Every time is UTC,
+    and says so, because the admin log's instants are what a reader compares
+    against their own clock."""
+    out = [f"\n# Subscriber audit: {_handle(channel)}\n"]
+    window = overview.get("window")
+    if window:
+        out.append(f"- Admin-log window (UTC): {window[0][:16].replace('T', ' ')} "
+                   f"→ {window[1][:16].replace('T', ' ')} — Telegram keeps ~48h.")
+    else:
+        out.append("- The admin log holds no joins or leaves right now "
+                   "(Telegram keeps ~48h).")
+    out.append(f"- Joins: {overview.get('joins', 0)}  |  "
+               f"Leaves: {overview.get('leaves', 0)}  |  "
+               f"joined and already left: {overview.get('left_again', 0)}")
+    tiers = {v: [a for a in accounts if a["verdict"] == v]
+             for v in ("likely", "possible", "deleted", "clean")}
+    out.append(f"- Still subscribed from this window: {len(accounts)} — "
+               f"likely bots {len(tiers['likely'])}, possible "
+               f"{len(tiers['possible'])}, deleted {len(tiers['deleted'])}, "
+               f"clean {len(tiers['clean'])}")
+    if tiers["likely"]:
+        out.append(f"\n## Likely bots ({len(tiers['likely'])})\n")
+        out.extend(_audit_table(tiers["likely"]))
+    if tiers["possible"]:
+        out.append(f"\n## Possible ({len(tiers['possible'])})\n")
+        out.extend(_audit_table(tiers["possible"]))
+    if tiers["deleted"]:
+        ids = ", ".join(str(a["user_id"]) for a in tiers["deleted"])
+        out.append(f"\n## Deleted accounts ({len(tiers['deleted'])})\n")
+        out.append(f"No profile left to score: {ids}")
+    if not tiers["likely"] and not tiers["possible"]:
+        out.append("\nNo joiner in this window shows enough signals to flag.")
+    return "\n".join(out)
+
+
+def summarize_ban(channel: str, banned: list[dict], failed: list[dict]) -> str:
+    """What a ban call did, per account — the refusals included, each with
+    Telegram's own reason."""
+    out = [f"\n# Banned from {_handle(channel)}: {len(banned)}"
+           + (f", failed {len(failed)}" if failed else "") + "\n"]
+    for a in banned:
+        out.append(f"- {a['user_id']} {_account_label(a)}")
+    if failed:
+        out.append("\n## Not banned\n")
+        for a in failed:
+            out.append(f"- {a['user_id']} {_account_label(a)} — {a['reason']}")
+    return "\n".join(out)
+
+
 def summarize_install(result) -> str:
     """What `install` did, for a human at a terminal.
 
@@ -695,7 +770,7 @@ def _install_section(client, root) -> list[str]:
                    f"otherwise load alongside the current one")
     if client.gate_seeded:
         out.append(f"  {client.gate_file.relative_to(root)} — approval gate: "
-                   f"reads allowed, publishing behind a prompt")
+                   f"reads allowed, publishing and banning behind a prompt")
         if client.address_block_written and client.address_file is not None:
             out.append(f"  {client.address_file.relative_to(root)} — address "
                        f"block so subagents find the skill")
@@ -705,8 +780,12 @@ def _install_section(client, root) -> list[str]:
         out.append(f"  (the gate in {client.gate_file.relative_to(root)} left "
                    f"alone — seeded on first install only, so your edits "
                    f"survive an upgrade)")
-        out.append("  publishing tools this version expects behind a prompt: "
+        out.append("  write tools this version expects behind a prompt: "
                    + ", ".join(client.gate_tools))
+        if client.gates_added:
+            out.append(f"  {client.gate_file.relative_to(root)} — approval "
+                       "gate: added for write tools new since your last "
+                       "install: " + ", ".join(client.gates_added))
     if client.client == CODEX:
         # Silent by policy rather than by fault is the one failure a user
         # cannot diagnose from anything this command writes.

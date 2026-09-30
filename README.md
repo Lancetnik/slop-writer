@@ -17,9 +17,11 @@ An MCP server and a skill that analyze a Telegram channel, wired into
   can watch engagement evolve.
 - Pull subscriber growth/churn by acquisition source, and views by hour of day
   for the "best time to post" question.
-- Schedule, retime, and rewrite future posts — the one write path.
+- Audit who subscribed in the last ~48 hours and flag bot-farm accounts.
+- Schedule, retime, and rewrite future posts, and ban the bots an audit
+  flagged — the two write paths, each behind a permission prompt.
 
-Backed by Telethon. Everything reaches the agent as **MCP tools** — eleven of
+Backed by Telethon. Everything reaches the agent as **MCP tools** — thirteen of
 them, over a local SQLite DB (one file per channel) that a read-only SQL tool
 answers questions from.
 
@@ -38,7 +40,7 @@ slop-writer init        # Telegram credentials and the one-time login
 ```
 
 `install` writes the `slop-writer` entry in `.mcp.json`, a permission block in
-`.claude/settings.json` (reads allowed, publishing behind a prompt), and the
+`.claude/settings.json` (reads allowed, publishing and banning behind a prompt), and the
 skill into `.claude/skills/slop-writer/`; everything it writes is printed. The
 `.mcp.json` entry holds no machine-specific path, so it is safe to commit — a
 teammate clones, runs `slop-writer init`, and is done. **Restart your MCP client
@@ -55,7 +57,7 @@ slop-writer install --client claude --client codex
 
 For Codex the equivalents land in one file, `.codex/config.toml`: the
 `[mcp_servers.slop-writer]` entry and, on first install only, an
-`approval_mode = "prompt"` table for each of the three publishing tools. Every
+`approval_mode = "prompt"` table for each write tool (publishing and banning). Every
 install also writes an address block into `AGENTS.md` and a copy of the skill
 into `.agents/skills/slop-writer/`, whichever client you named — an agent that
 is neither can still find it.

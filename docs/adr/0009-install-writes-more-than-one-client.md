@@ -45,9 +45,9 @@ the module that says who has to approve them.
 
 `approval_mode` accepts `auto`, `prompt`, `writes` and `approve`; **there is no
 deny value**, so this axis can only put a human in front of a Telegram write.
-Three explicit per-tool tables were chosen over one server-level
+Explicit per-tool tables were chosen over one server-level
 `default_tools_approval_mode = "writes"` because the explicit form names the
-same three tools the roster names, which is what makes the invariant checkable.
+same tools the roster names, which is what makes the invariant checkable.
 A server-level default names no tool and so checks nothing.
 
 *Open question, from the live run that has not happened yet:* whether `writes`
@@ -127,15 +127,23 @@ for the live run rather than for this file.
   server inherits Codex's own default. **If a live scrape is cut short, the fix
   is `tool_timeout_sec` in `codex_server_entry()`** — recorded here so the next
   reader does not have to rediscover why the two entries disagree.
-- **No `default_tools_approval_mode`.** The three `prompt` tables gate the
-  three writes; the eight reads are unlisted, so they inherit whatever Codex
+- **No `default_tools_approval_mode`.** The four `prompt` tables gate the
+  four writes (0008 added the ban); the nine reads are unlisted, so they inherit whatever Codex
   defaults to. That is the half of the read/write split this decision does not
   *write* — the Claude Code side says `allow` on the whole server explicitly.
   It was left out because the four modes' semantics are documented by name
   only, and pinning reads to a value that turns out to mean something else
   would be worse than inheriting. **"A reading tool call raises no prompt" is a
   live acceptance check**, and if it fails the answer is a server-level default
-  beside the three tables, not instead of them.
+  beside the per-tool tables, not instead of them.
+- **`GATE_INTRODUCED` is applied to Claude Code only.** 0008's upgrade path
+  adds the rule of a write tool newer than the installed release, reading that
+  release off the `.claude/skills/` copy. Codex ships in the same release as
+  the ban, so every Codex first install already seeds all four tables and
+  there is no older Codex install to upgrade. The next write tool needs a
+  Codex half of that path, and a way to tell which release wrote
+  `.codex/config.toml` — the shared `.agents/skills/` copy cannot say, since
+  every install replaces it.
 
 ## Accepted costs
 

@@ -1,12 +1,13 @@
 # tg-scraper / slop-writer
 
-A **skill plus an MCP server** that analyze a Telegram channel and can queue a
-post to it. The eleven MCP tools are the whole agent-facing surface; the skill
-under `skills/slop-writer/` says which tool answers which question and what the
-numbers mean. Published to PyPI as `slop-writer`; two install channels
-(`slop-writer install`, `npx skills@latest add …`) serve that same skill
-directory, and one version covers package and skill. `install` wires it into a
-**client** — Claude Code or Codex, each independently (adr/0008).
+A **skill plus an MCP server** that analyze a Telegram channel, can queue a
+post to it, and can ban the bot subscribers an audit flags. The thirteen MCP
+tools are the whole agent-facing surface; the skill under `skills/slop-writer/`
+says which tool answers which question and what the numbers mean. Published to
+PyPI as `slop-writer`; two install channels (`slop-writer install`,
+`npx skills@latest add …`) serve that same skill directory, and one version
+covers package and skill. `install` wires it into a **client** — Claude Code or
+Codex, each independently (adr/0009).
 
 Rationale for a decision lives in `docs/adr/`; vocabulary in `CONTEXT.md`;
 structure (what calls what, where a symbol is) in codegraph.
@@ -52,8 +53,9 @@ structure (what calls what, where a symbol is) in codegraph.
   (`ScrapeResult`, `GroupScanResult`, …); the entrypoint calls `summarize_*`.
 - `db.py`, `errors.py` and `query.py` stay **stdlib-only** — a query stays
   answerable without a Telegram client.
-- `publish.py` is the **write surface** (adr/0003); nothing on a read path
-  imports it, which is why `scheduled.py` is separate.
+- `publish.py` is the **write surface** (adr/0003) — posting *and* banning
+  (adr/0008); nothing on a read path imports it, which is why `scheduled.py`
+  and `audit.py` are separate. `publish` reads them, never the reverse.
 - **`MESSAGE_TOO_LONG` comes from the network, by design** — the cap depends on
   the account, so `_too_long` translates Telethon's error rather than measuring
   the body.
@@ -64,7 +66,7 @@ structure (what calls what, where a symbol is) in codegraph.
 - `cli.py` is **argparse**, so an installed server carries no CLI framework;
   typer stays a `tools/` script dependency. `install.py` reads TOML with
   `tomllib` and writes it with a local emitter for the same reason — no runtime
-  dependency for one config format (adr/0008).
+  dependency for one config format (adr/0009).
 - **A client is selected, never detected**, and each is wired independently:
   `install_project`/`uninstall_project` take the selection, return one result
   per client, and read first-install from *that client's* own config key. A new
@@ -83,7 +85,7 @@ structure (what calls what, where a symbol is) in codegraph.
   and `codex_approval_rules()` live in one module because a renamed tool
   without its rule is silently ungated; `tests/test_server.py` compares all
   three. **A new client adds an emitter here, never a translation in
-  `install.py`** (adr/0008) — the module that decides which tools write is the
+  `install.py`** (adr/0009) — the module that decides which tools write is the
   one that says who approves them.
 - **Text only, never `structuredContent`** — Claude Code drops the content
   blocks when structure is present, so structure travels *inside* text. Register
@@ -199,7 +201,7 @@ inputs. `--caption-above` rides an `invert_media` monkey patch.
   install materialises the data directory once and never refreshes it. **One
   source, several destinations**: a project holds the skill under
   `.claude/skills/` *and* `.agents/skills/`, so "one directory" is now true of
-  the source only (adr/0008).
+  the source only (adr/0009).
 - Pins that carry a reason: `mcp>=1.10,<2` (`structured_output=False` is
   load-bearing and v2 moved `FastMCP`), `telethon>=1.36,<2` (client API, not the
   bot API).

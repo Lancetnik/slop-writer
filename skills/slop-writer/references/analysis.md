@@ -92,6 +92,39 @@ need a window one run does not have: whether a specific post's call to action
 brought people in, and the group's hour-of-day activity profile. Both come out
 of the accumulated database; schema.md carries a query for each.
 
+## Bot subscribers
+
+`audit_subscribers` reads the channel's admin log — the only place Telegram
+names who subscribed — and scores every account that joined and is still
+there. It needs admin rights, and the log keeps **about 48 hours**: run it
+while a suspicious wave is fresh, and on a regular cadence if the waves keep
+coming, since each run stores what it saw and a missed window is gone.
+
+The score is a sum of signals, each a trait bot farms share and real
+subscribers rarely do. **No single signal means bot.** Read them together:
+
+| Signal | What it is | Why it is weak alone |
+| --- | --- | --- |
+| `telegram_flag` | Telegram itself marked the account scam or fake | — it is Telegram's verdict |
+| `online_cluster` | last seen within minutes of two or more other joiners | the strongest one: a farm's script logs its accounts in together, people don't |
+| `new_account` | registered recently, judged by the id | new people join Telegram every day |
+| `open_last_seen` | shows an exact last-seen time | many people never touch privacy settings |
+| `generated_username` | ends in `_` plus a short random tail with a digit | some people pick `ivan_1990` |
+| `no_photo` | no profile photo | common among lurkers |
+
+`likely` is a score of 4 or more, `possible` 2–3. A `deleted` account has no
+profile left to judge — it is neither clean nor a bot, only gone.
+
+Beyond the table, look at the **shape of the wave**: several joiners with the
+same naming pattern (a first name plus an emoji), the same bio, joins spread
+over a day but last-seen times within one minute. That is the pattern the
+signals were built from. Show the user the `likely` and `possible` rows —
+names, usernames, signals — before anything is banned; they know their
+audience, and a real subscriber who looks odd is theirs to keep.
+
+Removing accounts is a write, with its own discipline in
+[publishing.md](publishing.md).
+
 ## Audience and timing
 
 `fetch_subscribers` accumulates. The period Telegram returns is already the

@@ -4,7 +4,7 @@ The contract is Lancetnik/slop-writer#19: this module knows about MCP clients
 and never about Telegram. No credentials, no TTY, no network — which is what
 makes `install` and `init` independent in either order.
 
-**A client is selected, never detected** (adr/0008). `install` writes Claude
+**A client is selected, never detected** (adr/0009). `install` writes Claude
 Code unless told otherwise and `--client codex` adds the second; autodetection
 would write artifacts nobody asked for and leave `uninstall` guessing. Each
 client is wired independently, so what a project holds for one says nothing
@@ -19,9 +19,11 @@ different owners:
   install only**. Someone who deliberately dropped
   `mcp__slop-writer__publish_schedule` from `ask` (headless autoposting by the
   channel's own owner, the case #15 protected) must not have it restored by an
-  upgrade.
+  upgrade. The one exception is a write tool newer than the installed release
+  (`server.GATE_INTRODUCED`): nobody can have removed a rule they never had,
+  and without it the tool would run under the server-wide `allow`.
 - **Codex** — one file, `.codex/config.toml`, holding both halves: the server
-  entry rewritten every run, the three `tools` approval tables seeded on first
+  entry rewritten every run, one `tools` approval table per write tool seeded on first
   install only. Codex writes `approval_mode` into that same file when a human
   answers "don't ask again", so the two policies meet inside one file rather
   than either side of one. The **global** Codex config is never read for
@@ -43,6 +45,7 @@ other command in this package uses.
 """
 
 import json
+import re
 import shutil
 import sysconfig
 import tomllib
@@ -52,7 +55,12 @@ from pathlib import Path
 
 from .db import DATA_DIR_NAME
 from .errors import SlopWriterError, UsageError
-from .server import SERVER_NAME, codex_approval_rules, permission_rules
+from .server import (
+    GATE_INTRODUCED,
+    SERVER_NAME,
+    codex_approval_rules,
+    permission_rules,
+)
 
 #: The clients `install` knows how to wire. Values, not an enum: they are typed
 #: at a command line and compared against argparse `choices`.
@@ -126,7 +134,7 @@ MANAGED_MCP_PATHS = (
 #: merely coexist with the project layer — it **outranks** it, so a gate we
 #: wrote could be overridden by one, which is a stronger reason to refuse than
 #: the symmetry with the check above. The macOS MDM form is a managed
-#: preference rather than a file and is undetectable here (adr/0008).
+#: preference rather than a file and is undetectable here (adr/0009).
 MANAGED_CODEX_PATHS = (
     "/etc/codex/managed_config.toml",
     "~/.codex/managed_config.toml",
@@ -300,6 +308,9 @@ class ClientInstall:
     address_block_written: bool = False
     #: The pre-0.4 directory this run deleted, or None if there was none (#34).
     legacy_skill_removed: Path | None = None
+    #: Gate rules an upgrade added for write tools newer than the release it
+    #: replaced — the human's file changed, so it is reported.
+    gates_added: tuple[str, ...] = ()
 
 
 @dataclass
@@ -416,10 +427,10 @@ def _toml_value(value: object) -> str:
 
 
 def _emit_table(path: tuple[str, ...], mapping: dict) -> str:
-    """One table and its sub-tables, in the shape adr/0008 shows.
+    """One table and its sub-tables, in the shape adr/0009 shows.
 
     A table with sub-tables and no scalars of its own is left out entirely —
-    `[mcp_servers.slop-writer.tools]` says nothing that the three tables under
+    `[mcp_servers.slop-writer.tools]` says nothing that the per-tool tables under
     it do not."""
     scalars = {k: v for k, v in mapping.items() if not isinstance(v, dict)}
     tables = {k: v for k, v in mapping.items() if isinstance(v, dict)}
@@ -623,6 +634,56 @@ def _seed_permissions(settings_path: Path) -> None:
     _write_json(settings_path, settings)
 
 
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def _installed_version(skill_target: Path) -> tuple[int, ...] | None:
+    """The release a project was last installed with, read off the skill copy
+    it still holds — `metadata.version` in SKILL.md, the same string the
+    package carries. None when there is no copy or no readable version."""
+    skill_md = skill_target / "SKILL.md"
+    if not skill_md.is_file():
+        return None
+    match = re.search(
+        r'^\s*version:\s*"?(\d+\.\d+\.\d+)"?\s*$',
+        skill_md.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    return _version_tuple(match.group(1)) if match else None
+
+
+def _gate_new_write_tools(
+    settings_path: Path, previous: tuple[int, ...] | None
+) -> tuple[str, ...]:
+    """On upgrade, add the `ask` rule of every write tool newer than the
+    release being replaced. Returns the rules actually added.
+
+    An unknown previous release (the skill copy is gone) counts as older than
+    all of them: re-adding a rule costs a prompt, a missing one costs a
+    Telegram write nobody approved."""
+    due = [
+        f"mcp__{SERVER_NAME}__{tool}"
+        for tool, since in GATE_INTRODUCED.items()
+        if previous is None or previous < _version_tuple(since)
+    ]
+    if not due:
+        return ()
+    settings = _read_json(settings_path)
+    permissions = settings.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        raise SlopWriterError(
+            f"{settings_path} has a `permissions` key that is not an object.",
+            hint="Fix it by hand, then run `slop-writer install` again.",
+        )
+    ask = permissions.setdefault("ask", [])
+    added = tuple(rule for rule in due if rule not in ask)
+    if added:
+        ask.extend(added)
+        _write_json(settings_path, settings)
+    return added
+
+
 def _write_address_block(address_path: Path, skill_dir: str) -> bool:
     """Append the address block, creating the file if there is none.
 
@@ -766,11 +827,17 @@ def _install_claude(project_root: Path) -> ClientInstall:
     _write_json(mcp_config, config)
 
     settings = project_root / Path(*SETTINGS_PATH)
+    skill_target = project_root / Path(*SKILLS_PARENT) / SKILL_DIR_NAME
+    gates_added: tuple[str, ...] = ()
     if first_install:
         _seed_permissions(settings)
+    else:
+        # Read before `_copy_skill` replaces the copy that carries it.
+        gates_added = _gate_new_write_tools(
+            settings, _installed_version(skill_target)
+        )
 
     address_file = project_root / MEMORY_FILE
-    skill_target = project_root / Path(*SKILLS_PARENT) / SKILL_DIR_NAME
     memory_written = False
     if first_install:
         memory_written = _write_address_block(
@@ -795,6 +862,7 @@ def _install_claude(project_root: Path) -> ClientInstall:
         address_file=address_file,
         address_block_written=memory_written,
         legacy_skill_removed=legacy_skill_removed,
+        gates_added=gates_added,
     )
 
 
@@ -839,8 +907,8 @@ def _install_codex(project_root: Path) -> ClientInstall:
     """Codex's one file, holding both halves of the wiring.
 
     The two idempotency policies meet inside it: the server entry is rewritten
-    every run because that rewrite is the upgrade path, and the three approval
-    tables are seeded on first install only because Codex itself writes into
+    every run because that rewrite is the upgrade path, and the per-tool
+    approval tables are seeded on first install only because Codex itself writes into
     them when a human answers "don't ask me again"."""
     config_file, text, before, existing = _codex_state(project_root)
     first_install = existing is None

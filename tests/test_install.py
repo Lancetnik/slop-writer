@@ -1,4 +1,4 @@
-"""`slop-writer install` / `uninstall` — the agent wiring (#19, #20, adr/0008).
+"""`slop-writer install` / `uninstall` — the agent wiring (#19, #20, adr/0009).
 
 Every test here runs against a `tmp_path` project. The one thing that cannot
 be faked is which files a real user already has, so each test starts by
@@ -17,6 +17,7 @@ JSON writer is.
 """
 
 import json
+import re
 import tomllib
 
 import pytest
@@ -187,7 +188,7 @@ def test_install_merges_into_an_existing_mcp_config(tmp_path):
 
 
 def test_install_seeds_the_read_write_split(tmp_path):
-    """`allow` on the whole server plus `ask` on the three publish names: with
+    """`allow` on the whole server plus `ask` on the write tools' names: with
     specificity ignored and ask > allow (#12), those two entries compose into
     exactly the intended shape."""
     result = install_project(tmp_path)
@@ -238,6 +239,58 @@ def test_a_reinstall_does_not_restore_a_removed_ask_rule(tmp_path):
     assert not result.for_client(CLAUDE).first_install
     assert not result.for_client(CLAUDE).gate_seeded
     assert PUBLISH_TOOLS[0] not in settings(tmp_path)["ask"]
+
+
+BAN_GATE = f"mcp__{SERVER_NAME}__publish_ban_subscribers"
+
+
+def _as_installed_by(root, version, *, drop):
+    """Rewind a project to what an older release left behind: its skill copy
+    says `version`, and its `ask` list lacks `drop`."""
+    skill_md = root / ".claude" / "skills" / "slop-writer" / "SKILL.md"
+    skill_md.write_text(
+        re.sub(r'version: "[\d.]+"', f'version: "{version}"',
+               skill_md.read_text())
+    )
+    path = root / ".claude" / "settings.json"
+    data = read(path)
+    data["permissions"]["ask"].remove(drop)
+    path.write_text(json.dumps(data))
+
+
+def test_an_upgrade_gates_a_write_tool_the_old_release_never_had(tmp_path):
+    """First-install-only seeding would leave the new tool under the
+    server-wide `allow` — a Telegram write with no prompt at all."""
+    install_project(tmp_path)
+    _as_installed_by(tmp_path, "0.4.3", drop=BAN_GATE)
+
+    result = install_project(tmp_path)
+
+    assert BAN_GATE in settings(tmp_path)["ask"]
+    assert result.for_client(CLAUDE).gates_added == (BAN_GATE,)
+    assert "publish_ban_subscribers" in summarize_install(result)
+
+
+def test_an_upgrade_past_the_gates_release_leaves_its_removal_alone(tmp_path):
+    """From the release that shipped the rule on, a missing one is the human's
+    choice — the same rule as for the original publish tools."""
+    install_project(tmp_path)
+    _as_installed_by(tmp_path, "0.5.0", drop=BAN_GATE)
+
+    result = install_project(tmp_path)
+
+    assert BAN_GATE not in settings(tmp_path)["ask"]
+    assert result.for_client(CLAUDE).gates_added == ()
+
+
+def test_an_upgrade_with_no_skill_copy_gates_rather_than_guesses(tmp_path):
+    install_project(tmp_path)
+    _as_installed_by(tmp_path, "0.4.3", drop=BAN_GATE)
+    (tmp_path / ".claude" / "skills" / "slop-writer" / "SKILL.md").unlink()
+
+    install_project(tmp_path)
+
+    assert BAN_GATE in settings(tmp_path)["ask"]
 
 
 def test_the_server_entry_is_replaced_on_every_run(tmp_path):
@@ -374,7 +427,7 @@ def test_install_writes_the_codex_server_entry(tmp_path):
 def test_the_codex_approval_tables_name_exactly_the_publishing_tools(tmp_path):
     """The gate the distribution carries, on the second client. Compared
     against the roster's own emitter rather than a literal list — that is what
-    makes a tool renamed without its rule fail here (adr/0008)."""
+    makes a tool renamed without its rule fail here (adr/0009)."""
     install_project(tmp_path, [CODEX])
 
     tools = codex_entry(tmp_path)["tools"]
@@ -684,7 +737,7 @@ def test_the_report_says_first_install_for_one_client_and_not_the_other(tmp_path
 
 
 def test_the_report_no_longer_claims_one_verified_client(tmp_path):
-    """The claim adr/0008 made false. What replaces it is the two clients this
+    """The claim adr/0009 made false. What replaces it is the two clients this
     command does not write, and why."""
     printed = summarize_install(install_project(tmp_path))
 

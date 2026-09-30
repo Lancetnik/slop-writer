@@ -49,15 +49,25 @@ from pydantic import BaseModel, ConfigDict, Field
 from telethon.errors import FloodWaitError
 
 from . import __version__
+from .audit import audit_subscribers as run_subscriber_audit
 from .db import data_dir, scraped_channels
 from .errors import SlopWriterError
 from .group import scan_group
-from .publish import edit_post, parse_schedule_time, prepare_schedule, render_body
+from .publish import ban_subscribers as send_bans
+from .publish import (
+    edit_post,
+    parse_schedule_time,
+    prepare_ban,
+    prepare_schedule,
+    render_body,
+)
 from .publish import reschedule_post as reschedule_scheduled_post
 from .publish import schedule_post as send_scheduled_post
 from .query import QueryFailure
 from .query import run_queries as run_sql_batch
 from .render import (
+    summarize_audit,
+    summarize_ban,
     summarize_group,
     summarize_queries,
     summarize_schedule,
@@ -84,7 +94,23 @@ SERVER_NAME = "slop-writer"
 #: The `publish_` prefix is load-bearing rather than cosmetic: Claude Code
 #: matches permission rules by tool name, so the name is the only thing
 #: carrying the read/write split into the prompt.
-WRITE_TOOLS = ("publish_schedule", "publish_reschedule", "publish_edit")
+WRITE_TOOLS = (
+    "publish_schedule",
+    "publish_reschedule",
+    "publish_edit",
+    "publish_ban_subscribers",
+)
+
+
+#: Write tools that arrived after projects were already being installed, with
+#: the release that first shipped each. `install` seeds the permission block on
+#: first install only (so a rule the human removed stays removed), which would
+#: leave a new write tool in an old project under the server-wide `allow` —
+#: ungated. An upgrade from a release older than the one named here has never
+#: seen the rule, so `install` adds it; from that release on, a missing rule
+#: is the human's choice again. Beside `WRITE_TOOLS` because a new write tool
+#: is one edit here, not two in two files.
+GATE_INTRODUCED = {"publish_ban_subscribers": "0.5.0"}
 
 
 def permission_rules() -> dict[str, list[str]]:
@@ -95,7 +121,7 @@ def permission_rules() -> dict[str, list[str]]:
     a rule naming no tool is a gate over nothing. `install` (#20) copies this;
     `tests/test_server.py` asserts the halves still line up.
 
-    Precedence is deny → ask → allow with specificity *ignored*, so the three
+    Precedence is deny → ask → allow with specificity *ignored*, so the
     `ask` entries beat the server-wide `allow` (verified in #12).
 
     A returned dict, not a constant: nothing should be able to edit the gate
@@ -113,10 +139,10 @@ def codex_approval_rules() -> dict[str, dict[str, str]]:
     A sibling of `permission_rules` rather than a translation living in
     `install.py`, for the reason that put the first one here: the gate and the
     roster are one fact, and a second module is a second place to forget. The
-    two emitters spell the same three names differently — Claude Code matches
+    two emitters spell the same names differently — Claude Code matches
     `mcp__slop-writer__publish_edit`, Codex matches the bare `publish_edit`
     under its own server — and `tests/test_server.py` compares both against the
-    roster and against each other (adr/0008).
+    roster and against each other (adr/0009).
 
     `prompt` is the only value that fits: Codex's `approval_mode` accepts
     `auto`, `prompt`, `writes` and `approve`, and none of them is a deny. This
@@ -573,6 +599,25 @@ def build_server(project_root: Path) -> FastMCP:
         return summarize_subscribers(result.channel, result.rows)
 
     @_tool(
+        annotations=local_write,
+        description=(
+            "Audit who subscribed to a channel lately: every join and leave in "
+            "the channel's admin log, and a profile snapshot of each account "
+            "that joined and is still subscribed, scored for bot-farm signals. "
+            "Stores both in the channel's database and returns the suspects "
+            "ranked, with the `user_id` each ban takes.\n"
+            "Requires ADMIN rights on the channel. Telegram keeps the admin "
+            "log for about 48 hours, so one run sees only that window."
+        ),
+    )
+    async def audit_subscribers(channel: str) -> str:
+        _session()
+        result = await run_subscriber_audit(
+            normalize_channel(channel), output_dir, session_file
+        )
+        return summarize_audit(result.channel, result.overview, result.accounts)
+
+    @_tool(
         annotations=read_only,
         description=(
             "Views per hour of day from Telegram's stats API — the channel's "
@@ -658,7 +703,7 @@ def build_server(project_root: Path) -> FastMCP:
         return summarize_queries(items, limit, truncate_cells)
 
     # ----------------------------------------------------------------------
-    # The write surface (adr/0003). Three tools, gated by `permission_rules`.
+    # The write surface (adr/0003, adr/0008). Gated by `permission_rules`.
     #
     # Each validates *before* `_session()`, exactly as the CLI does: a bad
     # time or an unreadable photo is worth reporting without a session, and it
@@ -756,6 +801,25 @@ def build_server(project_root: Path) -> FastMCP:
             normalize_channel(channel), message_id, text, entities, session_file
         )
         return summarize_schedule(result.channel, result.item, result.action)
+
+    @_tool(
+        annotations=telegram_overwrite,
+        description=(
+            "Ban accounts from a channel: each is removed and cannot rejoin "
+            "until an admin unbans it.\n"
+            "`user_ids` must come from `audit_subscribers` on this same "
+            "channel — an id the audit never saw is refused and nothing is "
+            "banned. At most 100 per call. Accounts Telegram refuses are "
+            "listed with its reason; the rest are still banned.\n"
+            "Requires admin rights with the ban-users permission."
+        ),
+    )
+    async def publish_ban_subscribers(channel: str, user_ids: list[int]) -> str:
+        handle = normalize_channel(channel)
+        accounts = prepare_ban(handle, user_ids, output_dir)
+        _session()
+        result = await send_bans(handle, accounts, session_file)
+        return summarize_ban(result.channel, result.banned, result.failed)
 
     return mcp
 
