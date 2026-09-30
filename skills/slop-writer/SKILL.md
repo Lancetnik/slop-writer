@@ -7,7 +7,7 @@ compatibility: >-
 license: Apache-2.0
 metadata:
   author: Lancetnik
-  version: "0.4.3"
+  version: "0.5.0"
 ---
 
 # Telegram channel analytics
