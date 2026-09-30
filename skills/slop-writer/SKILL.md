@@ -1,7 +1,7 @@
 ---
 name: slop-writer
 description: >-
-  Telegram channel analytics and scheduled publishing, through the `slop-writer` MCP server's tools. Covers posts, comments, engagement over time and forwarder networks; subscriber growth and churn by source; views by hour of day; a discussion group's threads and join/leave events; and the write path — queue, retime or rewrite a future post. Read this before calling any `slop-writer` tool: the tools say how to call them, this says which one answers the question and what its numbers mean. Not for reading one specific message, and not for chats the logged-in account cannot see.
+  Telegram channel analytics and scheduled publishing, through the `slop-writer` MCP server's tools. Covers posts, comments, engagement over time and forwarder networks; subscriber growth and churn by source; who subscribed lately and which of them are bots; views by hour of day; a discussion group's threads and join/leave events; and the write path — queue, retime or rewrite a future post, or ban bot subscribers. Read this before calling any `slop-writer` tool: the tools say how to call them, this says which one answers the question and what its numbers mean. Not for reading one specific message, and not for chats the logged-in account cannot see.
 compatibility: >-
   The `slop-writer` MCP server, connected to this project. It holds the Telegram session and the per-channel databases; the user sets both up once with `slop-writer init` in their own terminal.
 license: Apache-2.0
@@ -27,12 +27,14 @@ question, and **what the answer means**.
 | the discussion under a channel's posts — comments, threads, joins and leaves | `scan_linked_group` | [analysis.md](references/analysis.md) |
 | a group that is nobody's comment section | `scan_standalone_group` | [analysis.md](references/analysis.md) |
 | where subscribers came from, and how many left | `fetch_subscribers` | [analysis.md](references/analysis.md) |
+| who subscribed lately, and whether they are bots | `audit_subscribers` | [analysis.md](references/analysis.md) |
 | the best hour of day to publish | `fetch_views_by_hour` | [analysis.md](references/analysis.md) |
 | a number, a ranking, a comparison, a text search | `run_query` | [analysis.md](references/analysis.md), then [schema.md](references/schema.md) |
 | to see what is already queued to publish | `list_scheduled` | [publishing.md](references/publishing.md) |
 | to queue, retime or rewrite a future post | `publish_schedule`, `publish_reschedule`, `publish_edit` | [publishing.md](references/publishing.md), then [markup.md](references/markup.md) |
+| to remove bot subscribers an audit found | `publish_ban_subscribers` | [publishing.md](references/publishing.md) |
 
-Three pairs are easy to swap, and picking wrong is quiet rather than loud:
+Four pairs are easy to swap, and picking wrong is quiet rather than loud:
 
 - **`scrape_posts` vs `refresh_posts`.** Scraping walks the channel's history;
   refreshing takes ids and makes one round trip. If a query or a group scan
@@ -47,6 +49,10 @@ Three pairs are easy to swap, and picking wrong is quiet rather than loud:
 - **`fetch_subscribers` vs `fetch_views_by_hour`.** "How many, and from where"
   against "when". Both need admin rights on the channel; neither is a
   substitute for the other, and neither is about posts.
+- **`fetch_subscribers` vs `audit_subscribers`.** Counts against accounts.
+  The first is Telegram's daily totals by source and names nobody; the second
+  names each recent joiner and judges them, but only for the last ~48 hours.
+  A spike in the counts is the reason to run the audit, not a result of it.
 
 Reach for `run_query` for anything a tool's own summary did not already
 answer. It is the general instrument — the scans exist to feed it.
@@ -97,8 +103,9 @@ retry with one of those.
 ## The write gate
 
 `publish_*` reaches a live channel. Run one only on an explicit instruction
-from the user. Their client prompts on every call with the exact body and
-time, and that prompt is the agreement; report what you queued once it lands.
+from the user. Their client prompts on every call with the exact arguments —
+a body and a time, or the accounts to ban — and that prompt is the agreement;
+report what landed once it does.
 
 ## Reporting back
 

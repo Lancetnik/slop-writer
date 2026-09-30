@@ -22,9 +22,11 @@ import typer
 from dotenv import load_dotenv
 
 from slop_writer.db import data_dir, env_path
+from slop_writer.audit import audit_subscribers
 from slop_writer.errors import SlopWriterError
 from slop_writer.group import scan_group
 from slop_writer.render import (
+    summarize_audit,
     summarize_group,
     summarize_scheduled,
     summarize_scrape,
@@ -226,6 +228,19 @@ def subscribers(
     _prepare(session_file)
     result = _run(fetch_subscribers(channel, output_dir, session_file))
     print(summarize_subscribers(result.channel, result.rows))
+
+
+@app.command("audit")
+def audit(
+    channel: AdminChannelOpt,
+    output_dir: OutputDirOpt = DEFAULT_OUTPUT_DIR,
+    session_file: SessionOpt = DEFAULT_SESSION,
+) -> None:
+    """Audit recent subscribers from the admin log and score them for bot
+    signals (subscriber_events + subscriber_profiles tables)."""
+    _prepare(session_file)
+    result = _run(audit_subscribers(channel, output_dir, session_file))
+    print(summarize_audit(result.channel, result.overview, result.accounts))
 
 
 @app.command("views")

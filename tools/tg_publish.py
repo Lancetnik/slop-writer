@@ -25,17 +25,19 @@ from typing import Annotated
 import typer
 from dotenv import load_dotenv
 
-from slop_writer.db import env_path
+from slop_writer.db import data_dir, env_path
 from slop_writer.errors import SlopWriterError
 from slop_writer.publish import (
+    ban_subscribers,
     edit_post,
     parse_schedule_time,
+    prepare_ban,
     prepare_schedule,
     render_body,
     reschedule_post,
     schedule_post,
 )
-from slop_writer.render import summarize_schedule
+from slop_writer.render import summarize_ban, summarize_schedule
 from slop_writer.tg import require_session, session_path
 
 # The CLI layer decides what "the project root" is — the directory the user
@@ -59,7 +61,10 @@ logging.getLogger("telethon").setLevel(logging.WARNING)
 # raise exceptions, not warnings.
 logging.getLogger("telethon.client.messageparse").setLevel(logging.ERROR)
 
-app = typer.Typer(help="Publish to a Telegram channel: schedule / reschedule / edit posts.")
+app = typer.Typer(
+    help="Write to a Telegram channel: schedule / reschedule / edit posts, "
+    "ban audited subscribers."
+)
 
 
 @app.callback()
@@ -223,6 +228,25 @@ def edit(
     except SlopWriterError as exc:
         raise _fail(exc) from None
     print(summarize_schedule(result.channel, result.item, result.action))
+
+
+@app.command("ban")
+def ban(
+    channel: ChannelOpt,
+    user_id: Annotated[
+        list[int],
+        typer.Option(help="Account to ban, from `tg_scrape.py audit`. Repeatable."),
+    ],
+    session_file: SessionOpt = DEFAULT_SESSION,
+) -> None:
+    """Ban accounts the subscriber audit saw join the channel."""
+    try:
+        accounts = prepare_ban(channel, user_id, data_dir(PROJECT_ROOT))
+        require_session(session_file, LOGIN_COMMAND)
+        result = asyncio.run(ban_subscribers(channel, accounts, session_file))
+    except SlopWriterError as exc:
+        raise _fail(exc) from None
+    print(summarize_ban(result.channel, result.banned, result.failed))
 
 
 if __name__ == "__main__":

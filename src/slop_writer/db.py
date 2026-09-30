@@ -99,6 +99,34 @@ CREATE TABLE IF NOT EXISTS subscriber_sources (
     PRIMARY KEY (date, source)
 );
 
+CREATE TABLE IF NOT EXISTS subscriber_events (
+    id        INTEGER NOT NULL,
+    date      TEXT,
+    kind      TEXT,
+    via       TEXT,
+    user_id   INTEGER NOT NULL,
+    PRIMARY KEY (id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS subscriber_profiles (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL,
+    audit_date    TEXT    NOT NULL,
+    name          TEXT,
+    username      TEXT,
+    has_photo     INTEGER,
+    premium       INTEGER,
+    deleted       INTEGER,
+    flagged       TEXT,
+    status        TEXT,
+    was_online    TEXT,
+    signals       TEXT,
+    score         INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriber_profiles_user
+    ON subscriber_profiles(user_id);
+
 CREATE TABLE IF NOT EXISTS group_messages (
     id               INTEGER PRIMARY KEY,
     date             TEXT,

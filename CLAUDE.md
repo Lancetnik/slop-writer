@@ -1,9 +1,10 @@
 # tg-scraper / slop-writer
 
-A Claude Code **skill plus an MCP server** that analyze a Telegram channel and
-can queue a post to it. The eleven MCP tools are the whole agent-facing
-surface; the skill under `skills/slop-writer/` says which tool answers which
-question and what the numbers mean. Published to PyPI as `slop-writer`; two
+A Claude Code **skill plus an MCP server** that analyze a Telegram channel,
+can queue a post to it, and can ban the bot subscribers an audit flags. The
+thirteen MCP tools are the whole agent-facing surface; the skill under
+`skills/slop-writer/` says which tool answers which question and what the
+numbers mean. Published to PyPI as `slop-writer`; two
 install channels (`slop-writer install`, `npx skills@latest add …`) serve that
 same skill directory, and one version covers package and skill.
 
@@ -50,8 +51,9 @@ structure (what calls what, where a symbol is) in codegraph.
   (`ScrapeResult`, `GroupScanResult`, …); the entrypoint calls `summarize_*`.
 - `db.py`, `errors.py` and `query.py` stay **stdlib-only** — a query stays
   answerable without a Telegram client.
-- `publish.py` is the **write surface** (adr/0003); nothing on a read path
-  imports it, which is why `scheduled.py` is separate.
+- `publish.py` is the **write surface** (adr/0003) — posting *and* banning
+  (adr/0008); nothing on a read path imports it, which is why `scheduled.py`
+  and `audit.py` are separate. `publish` reads them, never the reverse.
 - **`MESSAGE_TOO_LONG` comes from the network, by design** — the cap depends on
   the account, so `_too_long` translates Telethon's error rather than measuring
   the body.

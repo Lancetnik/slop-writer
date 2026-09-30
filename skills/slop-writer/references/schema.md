@@ -71,6 +71,32 @@ CREATE TABLE subscriber_sources (
     PRIMARY KEY (date, source)
 );
 
+CREATE TABLE subscriber_events (
+    id        INTEGER NOT NULL,
+    date      TEXT,
+    kind      TEXT,
+    via       TEXT,
+    user_id   INTEGER NOT NULL,
+    PRIMARY KEY (id, user_id)
+);
+
+CREATE TABLE subscriber_profiles (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL,
+    audit_date    TEXT    NOT NULL,
+    name          TEXT,
+    username      TEXT,
+    has_photo     INTEGER,
+    premium       INTEGER,
+    deleted       INTEGER,
+    flagged       TEXT,
+    status        TEXT,
+    was_online    TEXT,
+    signals       TEXT,
+    score         INTEGER
+);
+CREATE INDEX idx_subscriber_profiles_user ON subscriber_profiles(user_id);
+
 CREATE TABLE group_messages (
     id               INTEGER PRIMARY KEY,
     date             TEXT,
@@ -323,6 +349,74 @@ Read this table as Telegram's *mechanism* of arrival, not as attribution:
 - Attributing a spike therefore needs context this DB doesn't hold: whether there was a seeding run, a collab, an outside publication. Ask the user; the numbers alone can't say.
 - `Shareable Chat Folders` is its own mechanism and can be a large share of arrivals — report it by name rather than folding it into `URL`.
 - Rows are upserted from the window Telegram returns, which is the widest it offers. Run `subscribers` soon after any event worth attributing: once a date falls out of that window it is unrecoverable.
+
+## `subscriber_events` — who joined and left the channel
+
+```sql
+CREATE TABLE subscriber_events (
+    id        INTEGER NOT NULL,
+    date      TEXT,
+    kind      TEXT,
+    via       TEXT,
+    user_id   INTEGER NOT NULL,
+    PRIMARY KEY (id, user_id)
+);
+```
+
+- Written by the subscriber audit, from the **channel's** admin log — the
+  only source that names the account behind a channel join, and it keeps
+  ~48h. Coverage is exactly the audit cadence; a gap is permanent.
+- `id` — admin-log event id. Upserted, so re-running an audit over the same
+  window adds nothing.
+- `kind` / `via` — same vocabulary as `group_events`: joins `added` (the
+  Join button), `link` (invite link), `request` (approved request); leaves
+  `self` or `removed` (banned or kicked by an admin — a ban from the audit
+  shows up here on the next run).
+- The channel's own subscriber *counts* are `subscribers`; this table is
+  per-account and far shorter-lived. Don't reconcile the two row for row.
+
+## `subscriber_profiles` — append-only snapshots of joiners
+
+```sql
+CREATE TABLE subscriber_profiles (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL,
+    audit_date    TEXT    NOT NULL,
+    name          TEXT,
+    username      TEXT,
+    has_photo     INTEGER,
+    premium       INTEGER,
+    deleted       INTEGER,
+    flagged       TEXT,
+    status        TEXT,
+    was_online    TEXT,
+    signals       TEXT,
+    score         INTEGER
+);
+CREATE INDEX idx_subscriber_profiles_user ON subscriber_profiles(user_id);
+```
+
+- One row per audited account per audit run. Same idiom as `post_metrics`:
+  **`MAX(id)` per `user_id` is the latest snapshot**, not `MAX(audit_date)`.
+- Only accounts that joined inside the audited window and had not left by
+  the run are snapshotted.
+- `flagged` — Telegram's own label: `scam`, `fake`, or NULL.
+- `status` — `online`, `offline`, `recently`, `lastweek`, `lastmonth`, or
+  NULL. `was_online` is set only when the account shows its exact last-seen
+  time (`offline`), UTC.
+- `signals` — comma-separated names of the bot signals the audit matched;
+  `score` their weighted sum. The signals and what they mean are in
+  [analysis.md](analysis.md) — read that before quoting a score.
+
+Latest snapshot of every audited account still flagged:
+
+```sql
+SELECT p.user_id, p.name, p.username, p.score, p.signals, p.audit_date
+FROM subscriber_profiles p
+WHERE p.id IN (SELECT MAX(id) FROM subscriber_profiles GROUP BY user_id)
+  AND p.score >= 4
+ORDER BY p.score DESC;
+```
 
 ## `group_messages` — comments and the discussion group, self-contained
 

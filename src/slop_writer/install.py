@@ -14,7 +14,9 @@ different owners:
   extra marker file is needed. Someone who deliberately dropped
   `mcp__slop-writer__publish_schedule` from `ask` (headless autoposting by the
   channel's own owner, the case #15 protected) must not have it restored by an
-  upgrade.
+  upgrade. The one exception is a write tool newer than the installed release
+  (`server.GATE_INTRODUCED`): nobody can have removed a rule they never had,
+  and without it the tool would run under the server-wide `allow`.
 
 Nothing here prints: `install_project` / `uninstall_project` return a result
 shape and `render.summarize_install` turns it into text, the same split every
@@ -22,6 +24,7 @@ other command in this package uses.
 """
 
 import json
+import re
 import shutil
 import sysconfig
 from dataclasses import dataclass, field
@@ -29,7 +32,7 @@ from pathlib import Path
 
 from .db import DATA_DIR_NAME
 from .errors import SlopWriterError
-from .server import SERVER_NAME, permission_rules
+from .server import GATE_INTRODUCED, SERVER_NAME, permission_rules
 
 #: The skill directory, identical in the repository, in the wheel, and under
 #: `.claude/skills/`. Both install channels (this one and `npx skills add`)
@@ -183,6 +186,9 @@ class InstallResult:
     #: The pre-0.4 directory this run deleted, or None if there was none (#34).
     legacy_skill_removed: Path | None = None
     ask_tools: tuple[str, ...] = PUBLISH_TOOLS
+    #: `ask` rules an upgrade added for write tools newer than the release it
+    #: replaced — the human's file changed, so it is reported.
+    gates_added: tuple[str, ...] = ()
 
 
 @dataclass
@@ -242,6 +248,56 @@ def _seed_permissions(settings_path: Path) -> None:
             if rule not in existing:
                 existing.append(rule)
     _write_json(settings_path, settings)
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def _installed_version(skill_target: Path) -> tuple[int, ...] | None:
+    """The release a project was last installed with, read off the skill copy
+    it still holds — `metadata.version` in SKILL.md, the same string the
+    package carries. None when there is no copy or no readable version."""
+    skill_md = skill_target / "SKILL.md"
+    if not skill_md.is_file():
+        return None
+    match = re.search(
+        r'^\s*version:\s*"?(\d+\.\d+\.\d+)"?\s*$',
+        skill_md.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    return _version_tuple(match.group(1)) if match else None
+
+
+def _gate_new_write_tools(
+    settings_path: Path, previous: tuple[int, ...] | None
+) -> tuple[str, ...]:
+    """On upgrade, add the `ask` rule of every write tool newer than the
+    release being replaced. Returns the rules actually added.
+
+    An unknown previous release (the skill copy is gone) counts as older than
+    all of them: re-adding a rule costs a prompt, a missing one costs a
+    Telegram write nobody approved."""
+    due = [
+        f"mcp__{SERVER_NAME}__{tool}"
+        for tool, since in GATE_INTRODUCED.items()
+        if previous is None or previous < _version_tuple(since)
+    ]
+    if not due:
+        return ()
+    settings = _read_json(settings_path)
+    permissions = settings.setdefault("permissions", {})
+    if not isinstance(permissions, dict):
+        raise SlopWriterError(
+            f"{settings_path} has a `permissions` key that is not an object.",
+            hint="Fix it by hand, then run `slop-writer install` again.",
+        )
+    ask = permissions.setdefault("ask", [])
+    added = tuple(rule for rule in due if rule not in ask)
+    if added:
+        ask.extend(added)
+        _write_json(settings_path, settings)
+    return added
 
 
 def _write_memory_block(memory_path: Path) -> None:
@@ -366,14 +422,20 @@ def install_project(project_root: Path) -> InstallResult:
     _write_json(mcp_config, config)
 
     settings = project_root / Path(*SETTINGS_PATH)
+    skill_target = project_root / Path(*SKILLS_PARENT) / SKILL_DIR_NAME
+    gates_added: tuple[str, ...] = ()
     if first_install:
         _seed_permissions(settings)
+    else:
+        # Read before `_copy_skill` replaces the copy that carries it.
+        gates_added = _gate_new_write_tools(
+            settings, _installed_version(skill_target)
+        )
 
     memory_file = project_root / MEMORY_FILE
     if first_install:
         _write_memory_block(memory_file)
 
-    skill_target = project_root / Path(*SKILLS_PARENT) / SKILL_DIR_NAME
     skill_existed = skill_target.exists()
     _copy_skill(skill_target)
     # After the copy, so a failure to find our own skill source leaves the old
@@ -392,6 +454,7 @@ def install_project(project_root: Path) -> InstallResult:
         memory_block_written=first_install,
         skill_existed=skill_existed,
         legacy_skill_removed=legacy_skill_removed,
+        gates_added=gates_added,
         skills_lock_names=_skills_lock_names(project_root),
         # The one self-check worth running: a `uv tool install` that missed
         # PATH surfaces inside the client as an undiagnosable "server didn't

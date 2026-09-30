@@ -52,6 +52,7 @@ READ_TOOLS = (
     "scan_linked_group",
     "scan_standalone_group",
     "fetch_subscribers",
+    "audit_subscribers",
     "fetch_views_by_hour",
     "list_scheduled",
     "run_query",
@@ -105,7 +106,7 @@ TOO_SOON = timedelta(minutes=30)
 # --------------------------------------------------------------------------
 
 
-def test_the_roster_is_the_eleven_tools_15_decided(tools):
+def test_the_roster_is_the_read_tools_and_the_write_tools(tools):
     assert set(tools) == set(READ_TOOLS) | set(WRITE_TOOLS)
 
 
@@ -209,11 +210,13 @@ def test_a_telegram_write_is_never_annotated_read_only(tools):
         assert tools[name].annotations.readOnlyHint is False
 
 
-def test_replacing_a_body_is_the_destructive_one(tools):
-    """Scheduling adds and rescheduling moves; only `publish_edit` discards
-    something a human may have written."""
-    assert tools["publish_edit"].annotations.destructiveHint is True
-    assert tools["publish_schedule"].annotations.destructiveHint is False
+def test_replacing_a_body_and_banning_are_the_destructive_ones(tools):
+    """Scheduling adds and rescheduling moves; `publish_edit` discards
+    something a human may have written, and a ban removes a subscriber."""
+    destructive = {
+        name for name in WRITE_TOOLS if tools[name].annotations.destructiveHint
+    }
+    assert destructive == {"publish_edit", "publish_ban_subscribers"}
 
 
 # --------------------------------------------------------------------------
@@ -302,6 +305,33 @@ def test_editing_a_post_gets_as_far_as_the_missing_session(server):
     thing standing between it and the network."""
     payload = failure(
         server, "publish_edit", channel="@chan", message_id=42, body="fixed",
+    )
+    assert payload["code"] == "NO_SESSION"
+
+
+def test_banning_an_account_no_audit_saw_is_refused_without_a_session(server):
+    """The ban's own validation — ids from an audit of this channel — runs
+    before the session check, like every other write tool's."""
+    payload = failure(
+        server, "publish_ban_subscribers", channel="@chan", user_ids=[42],
+    )
+    assert payload["code"] == "INVALID_ARGUMENT"
+    assert "audit" in payload["hint"]
+
+
+def test_an_audited_ban_gets_as_far_as_the_missing_session(tmp_path):
+    from slop_writer.db import open_db
+
+    conn = open_db(data_dir(tmp_path), "chan")
+    conn.execute(
+        "INSERT INTO subscriber_profiles (user_id, audit_date, score) "
+        "VALUES (42, '2026-09-30', 7)"
+    )
+    conn.commit()
+    conn.close()
+    payload = failure(
+        build_server(tmp_path), "publish_ban_subscribers",
+        channel="@chan", user_ids=[42],
     )
     assert payload["code"] == "NO_SESSION"
 

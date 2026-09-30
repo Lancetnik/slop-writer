@@ -1,8 +1,9 @@
 # Publishing
 
-`publish_schedule`, `publish_reschedule` and `publish_edit` are the only tools
-that write to Telegram. They need post rights on the channel. Read
-[markup.md](markup.md) before writing a post body.
+`publish_schedule`, `publish_reschedule`, `publish_edit` and
+`publish_ban_subscribers` are the only tools that write to Telegram. The first
+three need post rights on the channel; the ban needs admin rights to ban
+users. Read [markup.md](markup.md) before writing a post body.
 
 ## The discipline
 
@@ -75,3 +76,22 @@ cannot be changed — that needs a new post.
   whenever you are editing text you did not write in this session.
 - **Both change** → reschedule and edit are separate calls; report both once
   they land.
+
+## Banning subscribers
+
+`publish_ban_subscribers` removes accounts from the channel and keeps them
+out. It only accepts accounts that `audit_subscribers` saw join this channel,
+so audit first, and ban from that result — never from a name the user typed
+or from a commenter list.
+
+- Ban only on an **explicit instruction** naming who: "ban the likely ones"
+  after the user has seen that list; "clean up the bots" before
+  they have seen it does not. Show the suspects first ([analysis.md](analysis.md)).
+- The permission prompt shows the ids. Report what came back — banned and
+  refused — with names, since an id means nothing to the user.
+- A ban is reversible only by an admin unbanning the account in Telegram;
+  nothing here unbans. A wrongly banned subscriber costs the user a manual
+  fix and possibly a reader, so when an account is borderline, leave it and
+  say so.
+- The next `audit_subscribers` run records each ban as a leave; that is the
+  way to verify one landed.
