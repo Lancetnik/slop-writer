@@ -1,9 +1,12 @@
-"""The write surface: queue, move, and rewrite a channel's scheduled posts.
+"""The write surface: queue, move, and rewrite a channel's scheduled posts,
+and ban the subscribers an audit flagged.
 
-The one module in this package that can post to Telegram, so that "this code
+The one module in this package that can write to Telegram, so that "this code
 can publish" stays auditable at the file level (docs/adr/0003 — the rule used
 to be satisfied by a separate script; the script is now a shell over this).
-Nothing here is imported by a read path.
+Nothing here is imported by a read path. Banning joined it rather than getting
+a module of its own because the property worth auditing is "changes the
+channel", not "posts" (docs/adr/0008).
 
 Pipeline: Markdown --(slop_writer.markdown)--> text + Telethon MessageEntity
 list --> client.send_message(schedule), or client.send_file(schedule) when
@@ -25,18 +28,27 @@ server says "the `body` argument", and both are right for their reader.
 """
 
 import logging
+import sqlite3
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from telethon.errors import MediaCaptionTooLongError, MessageTooLongError
+from telethon.errors import (
+    ChatAdminRequiredError,
+    FloodWaitError,
+    MediaCaptionTooLongError,
+    MessageTooLongError,
+    RPCError,
+)
 from telethon.tl.functions.messages import (
     EditMessageRequest,
     SendMediaRequest,
     SendMultiMediaRequest,
 )
 
+from .audit import fetch_membership_log
+from .db import db_path_for
 from .errors import SlopWriterError, UsageError
 from .markdown import render as render_markdown
 from .scheduled import get_scheduled_message
@@ -49,6 +61,11 @@ log = logging.getLogger(__name__)
 # floor the agent could pass would be the agent holding its own leash. The
 # human owner can still edit this constant. See docs/adr/0003.
 MIN_LEAD = timedelta(hours=1)
+
+#: Most accounts one ban call removes. A wave larger than this is a reason to
+#: look twice, and an agent that wants more has to come back and ask again —
+#: each call is one permission prompt a human reads.
+MAX_BAN = 100
 
 # A Telegram album (grouped media) holds at most 10 items.
 MAX_ALBUM = 10
@@ -367,3 +384,137 @@ async def edit_post(
         },
         "Edited",
     )
+
+
+# ---------------------------------------------------------------------------
+# Banning audited subscribers (docs/adr/0008)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BanResult:
+    """Shapes `render.summarize_ban` consumes. `failed` carries a `reason`
+    per account: one account Telegram refuses is that account's answer, not
+    the call's (adr/0007)."""
+    channel: str
+    banned: list[dict]
+    failed: list[dict]
+
+
+def prepare_ban(
+    channel: str, user_ids: list[int], output_dir: Path
+) -> list[dict]:
+    """Validate a ban request against the channel's audit, before any network.
+
+    Only an account the subscriber audit has seen join this channel can be
+    banned: that is what keeps the tool from reaching commenters, admins or
+    any id a model misremembered. Returns the audited accounts, latest
+    snapshot each, in request order."""
+    ids = list(dict.fromkeys(user_ids))
+    if not ids:
+        raise UsageError("No accounts to ban.", code="INVALID_ARGUMENT")
+    if len(ids) > MAX_BAN:
+        raise UsageError(
+            f"Got {len(ids)} accounts; one ban call takes at most {MAX_BAN}.",
+            code="INVALID_ARGUMENT",
+        )
+    known: dict[int, dict] = {}
+    path = db_path_for(output_dir, channel)
+    if path.exists():
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            marks = ",".join("?" * len(ids))
+            rows = conn.execute(
+                f"""
+                SELECT user_id, name, username, score, signals
+                FROM subscriber_profiles
+                WHERE id IN (
+                    SELECT MAX(id) FROM subscriber_profiles
+                    WHERE user_id IN ({marks}) GROUP BY user_id
+                )
+                """,
+                ids,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []  # a database from before the audit existed
+        finally:
+            conn.close()
+        known = {
+            r[0]: {"user_id": r[0], "name": r[1], "username": r[2],
+                   "score": r[3], "signals": r[4]}
+            for r in rows
+        }
+    unknown = [uid for uid in ids if uid not in known]
+    if unknown:
+        raise UsageError(
+            f"Not among {channel}'s audited subscribers: "
+            f"{', '.join(map(str, unknown))}. Nothing was banned.",
+            hint="Only an account the subscriber audit saw join this channel "
+            "can be banned. Audit the channel's subscribers, then retry with "
+            "ids from that result.",
+            code="INVALID_ARGUMENT",
+        )
+    return [known[uid] for uid in ids]
+
+
+async def _input_users(client, entity, channel: str, ids: list[int]) -> dict:
+    """id -> InputUser. The session caches every user the audit's admin-log
+    read returned; a cold cache (another machine, a pruned session) is
+    refilled by reading the log once more."""
+    found, missing = {}, []
+    for uid in ids:
+        try:
+            found[uid] = await client.get_input_entity(uid)
+        except ValueError:
+            missing.append(uid)
+    if missing:
+        await fetch_membership_log(client, entity, channel)
+        for uid in missing:
+            try:
+                found[uid] = await client.get_input_entity(uid)
+            except ValueError:
+                pass
+    return found
+
+
+async def ban_subscribers_with_client(
+    client, entity, channel: str, accounts: list[dict]
+) -> BanResult:
+    """Ban `accounts` (from `prepare_ban`) over a connected client.
+
+    A ban here is Telegram's `view_messages=False`: the account is removed
+    and cannot rejoin until unbanned. No admin rights is the call refusing —
+    nothing could succeed — so it raises; anything else Telegram refuses is
+    recorded against the one account it concerns."""
+    inputs = await _input_users(client, entity, channel, [a["user_id"] for a in accounts])
+    banned, failed = [], []
+    for account in accounts:
+        target = inputs.get(account["user_id"])
+        if target is None:
+            failed.append({**account, "reason": "no longer resolvable — the "
+                           "account left the admin log's window"})
+            continue
+        try:
+            await client.edit_permissions(entity, target, view_messages=False)
+        except ChatAdminRequiredError as e:
+            raise SlopWriterError(
+                f"Cannot ban in {channel}: {e}",
+                hint="Banning needs admin rights with the ban-users "
+                "permission on the channel.",
+                code="NOT_ADMIN",
+            ) from None
+        except FloodWaitError:
+            raise
+        except RPCError as e:
+            failed.append({**account, "reason": str(e)})
+            continue
+        log.info("banned %s from %s", account["user_id"], channel)
+        banned.append(account)
+    return BanResult(channel, banned, failed)
+
+
+async def ban_subscribers(
+    channel: str, accounts: list[dict], session_file: str
+) -> BanResult:
+    async with channel_session(session_file, channel) as (client, entity):
+        return await ban_subscribers_with_client(client, entity, channel, accounts)

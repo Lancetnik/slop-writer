@@ -157,8 +157,8 @@ def test_internal_is_the_boundarys_alone():
 
 def test_the_tool_boundary_names_flood_wait_once_for_every_tool():
     """Telethon raises `FloodWaitError` from any call at any depth, so the
-    boundary is the only place a *tool* can name it once rather than eleven
-    times. `init.py` names it too and is not a counter-example: the login flood
+    boundary is the only place a *tool* can name it once rather than once
+    per tool. `init.py` names it too and is not a counter-example: the login flood
     happens before any tool exists, on a call the CLI makes directly."""
     named = _codes_named_in_source()["FLOOD_WAIT"]
     assert "server.py" in named

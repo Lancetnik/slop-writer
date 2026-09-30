@@ -16,9 +16,11 @@ channel:
   can watch engagement evolve.
 - Pull subscriber growth/churn by acquisition source, and views by hour of day
   for the "best time to post" question.
-- Schedule, retime, and rewrite future posts — the one write path.
+- Audit who subscribed in the last ~48 hours and flag bot-farm accounts.
+- Schedule, retime, and rewrite future posts, and ban the bots an audit
+  flagged — the two write paths, each behind a permission prompt.
 
-Backed by Telethon. Everything reaches the agent as **MCP tools** — eleven of
+Backed by Telethon. Everything reaches the agent as **MCP tools** — thirteen of
 them, over a local SQLite DB (one file per channel) that a read-only SQL tool
 answers questions from.
 
@@ -37,7 +39,7 @@ slop-writer init        # Telegram credentials and the one-time login
 ```
 
 `install` writes the `slop-writer` entry in `.mcp.json`, a permission block in
-`.claude/settings.json` (reads allowed, publishing behind a prompt), and the
+`.claude/settings.json` (reads allowed, publishing and banning behind a prompt), and the
 skill into `.claude/skills/slop-writer/`; everything it writes is printed. The
 `.mcp.json` entry holds no machine-specific path, so it is safe to commit — a
 teammate clones, runs `slop-writer init`, and is done. **Restart your MCP client

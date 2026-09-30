@@ -7,6 +7,7 @@ permission list, a CLAUDE.md with the human's own notes.
 """
 
 import json
+import re
 
 import pytest
 
@@ -113,6 +114,58 @@ def test_a_reinstall_does_not_restore_a_removed_ask_rule(tmp_path):
     assert not result.first_install
     assert not result.permissions_seeded
     assert PUBLISH_TOOLS[0] not in settings(tmp_path)["ask"]
+
+
+BAN_GATE = f"mcp__{SERVER_NAME}__publish_ban_subscribers"
+
+
+def _as_installed_by(root, version, *, drop):
+    """Rewind a project to what an older release left behind: its skill copy
+    says `version`, and its `ask` list lacks `drop`."""
+    skill_md = root / ".claude" / "skills" / "slop-writer" / "SKILL.md"
+    skill_md.write_text(
+        re.sub(r'version: "[\d.]+"', f'version: "{version}"',
+               skill_md.read_text())
+    )
+    path = root / ".claude" / "settings.json"
+    data = read(path)
+    data["permissions"]["ask"].remove(drop)
+    path.write_text(json.dumps(data))
+
+
+def test_an_upgrade_gates_a_write_tool_the_old_release_never_had(tmp_path):
+    """First-install-only seeding would leave the new tool under the
+    server-wide `allow` — a Telegram write with no prompt at all."""
+    install_project(tmp_path)
+    _as_installed_by(tmp_path, "0.4.3", drop=BAN_GATE)
+
+    result = install_project(tmp_path)
+
+    assert BAN_GATE in settings(tmp_path)["ask"]
+    assert result.gates_added == (BAN_GATE,)
+    assert "publish_ban_subscribers" in summarize_install(result)
+
+
+def test_an_upgrade_past_the_gates_release_leaves_its_removal_alone(tmp_path):
+    """From the release that shipped the rule on, a missing one is the human's
+    choice — the same rule as for the original publish tools."""
+    install_project(tmp_path)
+    _as_installed_by(tmp_path, "0.5.0", drop=BAN_GATE)
+
+    result = install_project(tmp_path)
+
+    assert BAN_GATE not in settings(tmp_path)["ask"]
+    assert result.gates_added == ()
+
+
+def test_an_upgrade_with_no_skill_copy_gates_rather_than_guesses(tmp_path):
+    install_project(tmp_path)
+    _as_installed_by(tmp_path, "0.4.3", drop=BAN_GATE)
+    (tmp_path / ".claude" / "skills" / "slop-writer" / "SKILL.md").unlink()
+
+    install_project(tmp_path)
+
+    assert BAN_GATE in settings(tmp_path)["ask"]
 
 
 def test_the_server_entry_is_replaced_on_every_run(tmp_path):

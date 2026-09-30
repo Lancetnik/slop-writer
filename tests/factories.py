@@ -39,6 +39,9 @@ from telethon.tl.types import (
     ReactionEmoji,
     ReactionPaid,
     User,
+    UserProfilePhoto,
+    UserStatusOffline,
+    UserStatusRecently,
 )
 
 # Fixed so nothing in the suite depends on wall-clock time.
@@ -176,10 +179,25 @@ def channel(id: int = CHANNEL_ID, *, title: str = "The Channel",
 
 
 def user(id: int, *, first: str | None = "Ann", last: str | None = None,
-         username: str | None = None) -> User:
+         username: str | None = None, photo: bool = False,
+         was_online: datetime | None = None, recently: bool = False,
+         **flags) -> User:
     """A real `User` — the shape `_resolve_event_users` and the admin log's
-    own `users` list are read through."""
-    return User(id=id, first_name=first, last_name=last, username=username)
+    own `users` list are read through.
+
+    `was_online` gives an exact last-seen (`UserStatusOffline`), `recently`
+    the hidden one; `flags` passes Telegram's booleans (`deleted`, `scam`,
+    `premium`, …) straight through."""
+    status = None
+    if was_online is not None:
+        status = UserStatusOffline(was_online=was_online)
+    elif recently:
+        status = UserStatusRecently()
+    return User(
+        id=id, first_name=first, last_name=last, username=username,
+        photo=UserProfilePhoto(photo_id=1, dc_id=2) if photo else None,
+        status=status, **flags,
+    )
 
 
 class FullChannel:
@@ -274,6 +292,10 @@ class FakeClient:
     * `send_error` makes `send_message` / `send_file` raise — how Telegram
       reports a body over the cap, since this package deliberately does not
       measure it.
+    * `known_users` is the session's entity cache for `get_input_entity`.
+      Reading an admin-log page adds its users to it, as Telethon does with
+      every response — which is what a cold-cache ban relies on.
+      `ban_errors` makes `edit_permissions` raise for one account.
 
     Every call is recorded so a test can assert a round-trip did *not* happen.
     """
@@ -290,6 +312,8 @@ class FakeClient:
         admin_log_error: Exception | None = None,
         iter_error: Exception | None = None,
         send_error: Exception | None = None,
+        known_users: set[int] | None = None,
+        ban_errors: dict[int, Exception] | None = None,
     ) -> None:
         self.messages = list(messages or [])
         self.comments = comments or {}
@@ -305,6 +329,9 @@ class FakeClient:
         self.admin_log_error = admin_log_error
         self.iter_error = iter_error
         self.send_error = send_error
+        self.known_users = set(known_users or ())
+        self.ban_errors = ban_errors or {}
+        self.bans: list[int] = []                 # edit_permissions targets
 
         self.sends: list[dict] = []               # send_message/send_file kwargs
         self.calls: list[list[int]] = []          # get_messages id lists
@@ -362,7 +389,19 @@ class FakeClient:
             raise entity
         return entity
 
+    async def get_input_entity(self, peer):
+        if peer not in self.known_users:
+            raise ValueError(f"no input entity for {peer!r}")
+        return PeerUser(peer)
+
     # -- writes -------------------------------------------------------------
+
+    async def edit_permissions(self, entity, user, **rights):
+        uid = entity_key(user)
+        if uid in self.ban_errors:
+            raise self.ban_errors[uid]
+        assert rights == {"view_messages": False}
+        self.bans.append(uid)
 
     async def send_message(self, entity, text, **kwargs):
         self.sends.append({"entity": entity, "text": text, **kwargs})
@@ -403,7 +442,9 @@ class FakeClient:
         if name == "GetAdminLogRequest":
             if self.admin_log_error is not None:
                 raise self.admin_log_error
-            return self._admin_log.pop(0) if self._admin_log else AdminLogPage([])
+            page = self._admin_log.pop(0) if self._admin_log else AdminLogPage([])
+            self.known_users.update(u.id for u in page.users)
+            return page
         raise AssertionError(f"unexpected request {name}")
 
 
