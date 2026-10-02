@@ -23,9 +23,9 @@ to the five files the agent reads. Run after editing either side:
     uv run tools/check_schema_doc.py
 
 Exits 0 when every statement matches (modulo whitespace and IF NOT EXISTS),
-1 with a per-statement diff otherwise. The doc's "Full schema at a glance"
-block plus its per-table blocks are all checked - each must restate its
-statement exactly.
+1 with a per-statement diff otherwise. The first SQL block ("Full schema at
+a glance") must contain the complete schema; later per-table blocks must
+restate their statements exactly.
 """
 
 import re
@@ -71,19 +71,24 @@ def main() -> int:
     truth = statements(SCHEMA + FTS_SCHEMA)
 
     doc = SCHEMA_MD.read_text(encoding="utf-8")
-    doc_sql = "\n".join(re.findall(r"```sql\n(.*?)```", doc, flags=re.DOTALL))
+    sql_blocks = re.findall(r"```sql\n(.*?)```", doc, flags=re.DOTALL)
+    doc_sql = "\n".join(sql_blocks)
+    overview = statements(sql_blocks[0]) if sql_blocks else set()
+    missing_from_overview = truth - overview
     # Per-table blocks repeat statements from the glance block; common-join
     # examples are SELECTs - keep only CREATE statements.
     documented = {s for s in statements(doc_sql) if s.upper().startswith("CREATE")}
 
     missing = truth - documented
     stale = documented - truth
-    if not missing and not stale:
+    if not missing and not stale and not missing_from_overview:
         print(f"OK: schema.md matches SCHEMA ({len(truth)} statements)")
         return 0
 
     for s in sorted(missing):
         print(f"NOT IN schema.md:\n  {s}\n", file=sys.stderr)
+    for s in sorted(missing_from_overview - missing):
+        print(f"NOT IN schema.md overview:\n  {s}\n", file=sys.stderr)
     for s in sorted(stale):
         print(f"STALE in schema.md (not in SCHEMA):\n  {s}\n", file=sys.stderr)
     print(
