@@ -246,7 +246,7 @@ def test_a_repeated_id_is_banned_once(audited):
 def test_banning_bans_every_account_asked_for(audited):
     accounts = prepare_ban(CHANNEL, [FARM, FARM + 1], audited)
     client = FakeClient(known_users={FARM, FARM + 1})
-    result = run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts))
+    result = run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts, audited))
     assert client.bans == [FARM, FARM + 1]
     assert [a["user_id"] for a in result.banned] == [FARM, FARM + 1]
     assert result.failed == []
@@ -255,7 +255,7 @@ def test_banning_bans_every_account_asked_for(audited):
 def test_a_cold_session_cache_is_refilled_from_the_admin_log(audited):
     accounts = prepare_ban(CHANNEL, [FARM], audited)
     client = FakeClient(admin_log=[AdminLogPage([join(10, FARM)], [farm_user(FARM)])])
-    result = run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts))
+    result = run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts, audited))
     assert client.bans == [FARM]
     assert result.failed == []
 
@@ -263,7 +263,7 @@ def test_a_cold_session_cache_is_refilled_from_the_admin_log(audited):
 def test_an_account_that_can_no_longer_be_resolved_is_reported_not_raised(audited):
     accounts = prepare_ban(CHANNEL, [FARM, FARM + 1], audited)
     client = FakeClient(known_users={FARM})
-    result = run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts))
+    result = run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts, audited))
     assert [a["user_id"] for a in result.banned] == [FARM]
     assert [a["user_id"] for a in result.failed] == [FARM + 1]
 
@@ -275,7 +275,7 @@ def test_one_refused_account_does_not_stop_the_rest(audited):
         known_users={FARM, FARM + 1},
         ban_errors={FARM: UserAdminInvalidError(request=None)},
     )
-    result = run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts))
+    result = run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts, audited))
     assert client.bans == [FARM + 1]
     assert [a["user_id"] for a in result.failed] == [FARM]
 
@@ -287,5 +287,129 @@ def test_no_ban_rights_is_the_call_refusing(audited):
         ban_errors={FARM: ChatAdminRequiredError(request=None)},
     )
     with pytest.raises(SlopWriterError) as exc:
-        run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts))
+        run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts, audited))
     assert exc.value.code == "NOT_ADMIN"
+
+
+# Historical moderation remains a reference after the log expires.
+def seed_removal(root, uid, when=DATE):
+    from slop_writer.db import open_db
+    from slop_writer.audit import record_ban
+    conn = open_db(root, CHANNEL)
+    record_ban(conn, uid, when.isoformat(), "tool")
+    conn.close()
+
+
+def test_one_joiner_matches_a_refreshed_previous_removal(tmp_path):
+    old = farm_user(FARM)
+    newcomer = user(FARM + 80, first="Оля", username="realolya_ajre",
+                    photo=True, was_online=DATE + timedelta(hours=5, seconds=4))
+    seed_removal(tmp_path, old.id)
+    client = FakeClient(entities={old.id: old}, admin_log=[
+        AdminLogPage([join(40, newcomer.id)], [newcomer])
+    ])
+    result = audit(client, tmp_path)
+    [account] = result.accounts
+    assert account["verdict"] == "likely"
+    assert account["matched_banned_ids"] == [old.id]
+    assert "known_pool_activity" in account["signals"]
+    assert old.id in client.entity_calls
+    assert result.overview["reference_count"] == 1
+
+
+def test_removed_joiner_is_reported_and_cannot_match_itself(tmp_path):
+    u = farm_user(FARM)
+    removed = AdminLogEvent(41, Named(
+        "ChannelAdminLogEventActionParticipantToggleBan",
+        new_participant=Named("ChannelParticipantBanned", left=True, peer=Named("PeerUser", user_id=u.id),
+                              banned_rights=Named("ChatBannedRights", view_messages=True)),
+    ), user_id=1, date=DATE + timedelta(minutes=2))
+    result = audit(FakeClient(admin_log=[AdminLogPage([removed, join(40, u.id)], [u])]), tmp_path)
+    assert result.accounts == []
+    [account] = result.overview["removed_accounts"]
+    assert account["user_id"] == u.id
+    assert account["matched_banned_ids"] == []
+    assert db_rows(tmp_path, "SELECT user_id, source FROM subscriber_bans") == [(u.id, "admin_log")]
+
+
+def test_history_backfills_removals_from_an_older_database(tmp_path):
+    from slop_writer.db import open_db
+    conn = open_db(tmp_path, CHANNEL)
+    conn.execute("INSERT INTO subscriber_events VALUES (?, ?, 'leave', 'removed', ?)",
+                 (999, DATE.isoformat(), FARM))
+    conn.commit()
+    conn.close()
+    result = audit(FakeClient(entities={FARM: farm_user(FARM)}), tmp_path)
+    assert result.overview["reference_count"] == 1
+    assert db_rows(tmp_path, "SELECT user_id FROM subscriber_bans") == [(FARM,)]
+
+
+def test_failed_refresh_keeps_saved_reference_and_reports_it(tmp_path):
+    import json
+    from slop_writer.db import open_db
+    seed_removal(tmp_path, FARM)
+    conn = open_db(tmp_path, CHANNEL)
+    conn.execute("UPDATE subscriber_bans SET profile_json=?", (json.dumps(farm_profile(FARM)),))
+    conn.commit()
+    conn.close()
+    newcomer = user(FARM + 80, photo=True, was_online=DATE + timedelta(seconds=4))
+    result = audit(FakeClient(admin_log=[AdminLogPage([join(40, newcomer.id)], [newcomer])]), tmp_path)
+    assert result.overview["unavailable_references"] == [FARM]
+    assert result.accounts[0]["matched_banned_ids"] == [FARM]
+
+
+def test_partial_ban_records_only_successful_accounts(audited):
+    accounts = prepare_ban(CHANNEL, [FARM, FARM + 1], audited)
+    client = FakeClient(known_users={FARM, FARM + 1},
+                        ban_errors={FARM: UserAdminInvalidError(request=None)})
+    run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts, audited))
+    assert db_rows(audited, "SELECT user_id, source FROM subscriber_bans") == [(FARM + 1, "tool")]
+
+
+def test_success_before_flood_wait_is_still_recorded(audited):
+    from telethon.errors import FloodWaitError
+    accounts = prepare_ban(CHANNEL, [FARM, FARM + 1], audited)
+    client = FakeClient(known_users={FARM, FARM + 1},
+                        ban_errors={FARM + 1: FloodWaitError(request=None, capture=60)})
+    with pytest.raises(FloodWaitError):
+        run(ban_subscribers_with_client(client, channel(), CHANNEL, accounts, audited))
+    assert db_rows(audited, "SELECT user_id FROM subscriber_bans") == [(FARM,)]
+
+
+def test_reference_does_not_add_points_without_matching_activity():
+    [account] = score_accounts([profile(FARM + 80)], [farm_profile(FARM)])
+    assert account["score"] == 2
+    assert account["matched_banned_ids"] == []
+
+
+def test_current_cluster_and_reference_do_not_double_count_activity():
+    profiles = [farm_profile(FARM + i) for i in range(3)]
+    [account, *_] = score_accounts(profiles, [farm_profile(FARM + 80)])
+    assert account["matched_banned_ids"] == [FARM + 80]
+    assert "online_cluster" in account["signals"]
+    assert "known_pool_activity" not in account["signals"]
+
+
+
+def test_removal_references_are_scoped_to_the_channel(tmp_path):
+    from slop_writer.db import open_db
+    from slop_writer.audit import record_ban
+    conn = open_db(tmp_path, "other")
+    record_ban(conn, FARM, DATE.isoformat(), "tool")
+    conn.close()
+    result = audit(audited_client(), tmp_path)
+    assert result.overview["reference_count"] == 0
+
+
+def test_renderer_includes_removed_accounts_and_match_ids():
+    from slop_writer.render import summarize_audit
+    [removed] = score_accounts(
+        [{**farm_profile(FARM), "joined": DATE.isoformat()}],
+        [farm_profile(FARM + 1)],
+    )
+    summary = summarize_audit(CHANNEL, {
+        "removed_accounts": [removed], "reference_count": 1,
+    }, [])
+    assert "Already removed" in summary
+    assert str(FARM) in summary
+    assert f"matches {FARM + 1}" in summary

@@ -95,3 +95,7 @@ or from a commenter list.
   say so.
 - The next `audit_subscribers` run records each ban as a leave; that is the
   way to verify one landed.
+
+Successful bans are saved individually in the channel’s moderation history,
+even when later accounts fail. Administrator removals observed by the audit
+are recorded too; the next audit uses their refreshed profiles for comparison.

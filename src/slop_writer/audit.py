@@ -2,10 +2,9 @@
 like a bot farm.
 
 The source is the **channel's** admin log — the one place Telegram names the
-accounts behind a join, and only for an admin, for ~48 hours. Each run appends
-what the log still holds to `subscriber_events` and a profile snapshot per
-joiner to `subscriber_profiles`, so a regular cadence keeps a history the log
-itself discards.
+accounts behind a join, and only for an admin, for ~48 hours. Each run stores events in `subscriber_events` and profile snapshots
+in `subscriber_profiles`. Previous administrator removals remain comparison
+references in `subscriber_bans` beyond that window.
 
 The suspicion score is a sum of named signals, each one a trait the farm that
 prompted this module (2026-09, a wave of "Анна🖐 / Работаю в IT" accounts) had
@@ -18,6 +17,7 @@ A read path: nothing here can write to Telegram. Banning lives in `publish`
 (adr/0003, adr/0008), which reads this module's table and never the reverse.
 """
 
+import json
 import logging
 import re
 from bisect import bisect_left, bisect_right
@@ -65,6 +65,7 @@ WEIGHTS = {
     "open_last_seen": 1,    # exact last-seen time visible to strangers
     "generated_username": 1,
     "no_photo": 1,
+    "known_pool_activity": 3,
 }
 
 #: Score at or above which an account is a likely bot / worth a look.
@@ -194,7 +195,7 @@ def signals_of(profile: dict, clustered: set[int]) -> list[str]:
         ),
         "no_photo": not profile.get("has_photo"),
     }
-    return [name for name in WEIGHTS if found[name]]
+    return [name for name in WEIGHTS if found.get(name, False)]
 
 
 def verdict_of(profile: dict, score: int) -> str:
@@ -209,16 +210,26 @@ def verdict_of(profile: dict, score: int) -> str:
     return "clean"
 
 
-def score_accounts(profiles: list[dict]) -> list[dict]:
+def score_accounts(profiles: list[dict], references: list[dict] | None = None) -> list[dict]:
     """Each profile with its `signals`, `score` and `verdict` added."""
     clustered = online_clusters(profiles)
+    references = {p["user_id"]: p for p in (references or [])}.values()
     scored = []
     for p in profiles:
+        matches = []
+        if p.get("was_online") and not p.get("deleted"):
+            when = datetime.fromisoformat(p["was_online"])
+            matches = [r["user_id"] for r in references
+                       if r["user_id"] != p["user_id"] and r.get("was_online")
+                       and not r.get("deleted")
+                       and abs((when - datetime.fromisoformat(r["was_online"])).total_seconds()) <= ONLINE_WINDOW]
         signals = [] if p.get("deleted") else signals_of(p, clustered)
+        if matches and "online_cluster" not in signals:
+            signals.append("known_pool_activity")
         score = sum(WEIGHTS[s] for s in signals)
         scored.append(
             {**p, "signals": signals, "score": score,
-             "verdict": verdict_of(p, score)}
+             "verdict": verdict_of(p, score), "matched_banned_ids": matches}
         )
     return scored
 
@@ -252,14 +263,49 @@ def _store(conn, events: list[GroupEvent], accounts: list[dict], audit_date: str
     conn.commit()
 
 
+def record_ban(conn, user_id: int, banned_at: str, source: str):
+    """Retain moderation history; a removal is not a bot verdict."""
+    conn.execute(
+        "INSERT INTO subscriber_bans (user_id, banned_at, source) VALUES (?, ?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET "
+        "banned_at=MAX(subscriber_bans.banned_at, excluded.banned_at), "
+        "source=CASE WHEN subscriber_bans.source='tool' THEN 'tool' ELSE excluded.source END",
+        (user_id, banned_at, source),
+    )
+    conn.commit()
+
+
+async def refresh_banned_profiles(client, conn, users):
+    references, unavailable = [], []
+    for uid, saved in conn.execute("SELECT user_id, profile_json FROM subscriber_bans").fetchall():
+        try:
+            user = await client.get_entity(uid)
+        except FloodWaitError:
+            raise
+        except (ValueError, RPCError):
+            user = users.get(uid)
+            unavailable.append(uid)
+        if user is not None:
+            p = profile_of(user)
+            conn.execute("UPDATE subscriber_bans SET profile_json=? WHERE user_id=?",
+                         (json.dumps(p, ensure_ascii=False), uid))
+        elif saved:
+            p = json.loads(saved)
+        else:
+            continue
+        references.append(p)
+    conn.commit()
+    return references, unavailable
+
+
 async def audit_subscribers_with_client(
     client: TelegramClient, entity, channel: str, output_dir: Path
 ) -> AuditResult:
     """One audit over an already-connected client and a resolved channel.
 
-    Scores the accounts that **joined** within the log and have not left
-    since: someone who came and went is churn, not a subscriber to remove.
-    The ones who left are counted, and their events stored, all the same."""
+    Score remaining joiners and report administrator-removed joiners
+    separately. Refresh the persistent removal pool for activity comparisons;
+    ordinary self-leaves remain churn."""
     audit_date = datetime.now(UTC).isoformat()
     events, users = await fetch_membership_log(client, entity, channel)
 
@@ -278,12 +324,29 @@ async def audit_subscribers_with_client(
     profiles = [
         {**profile_of(users[uid]), "joined": joined_at[uid]} for uid in present
     ]
-    accounts = sorted(
-        score_accounts(profiles), key=lambda a: (-a["score"], a["joined"] or "")
-    )
-
     with closing(open_db(output_dir, channel)) as conn:
-        _store(conn, events, accounts, audit_date)
+        # Existing databases already retain removals beyond Telegram's window.
+        conn.execute(
+            "INSERT INTO subscriber_bans (user_id, banned_at, source) "
+            "SELECT user_id, MAX(date), 'admin_log' FROM subscriber_events "
+            "WHERE kind='leave' AND via='removed' AND date IS NOT NULL "
+            "GROUP BY user_id ON CONFLICT(user_id) DO NOTHING"
+        )
+        conn.commit()
+        for e in sorted(events, key=lambda e: e.date or ""):
+            if e.kind == "leave" and e.via == "removed" and e.user_id is not None:
+                record_ban(conn, e.user_id, e.date or audit_date, "admin_log")
+        references, unavailable = await refresh_banned_profiles(client, conn, users)
+        removed = [
+            {**profile_of(users[uid]), "joined": joined_at[uid]}
+            for uid, e in last.items()
+            if e.kind == "leave" and e.via == "removed" and uid in joined_at and uid in users
+        ]
+        accounts = sorted(
+            score_accounts(profiles, references), key=lambda a: (-a["score"], a["joined"] or "")
+        )
+        removed = score_accounts(removed, references)
+        _store(conn, events, accounts + removed, audit_date)
     log.info(
         "audited %d joiner(s), stored %d event(s) in %s",
         len(accounts), len(events), db_path_for(output_dir, channel),
@@ -292,6 +355,9 @@ async def audit_subscribers_with_client(
     dates = sorted(e.date for e in events if e.date)
     overview = {
         "window": (dates[0], dates[-1]) if dates else None,
+        "removed_accounts": removed,
+        "reference_count": len(references),
+        "unavailable_references": unavailable,
         "joins": sum(1 for e in events if e.kind == "join"),
         "leaves": sum(1 for e in events if e.kind == "leave"),
         "left_again": sum(

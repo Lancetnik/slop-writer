@@ -398,8 +398,8 @@ CREATE INDEX idx_subscriber_profiles_user ON subscriber_profiles(user_id);
 
 - One row per audited account per audit run. Same idiom as `post_metrics`:
   **`MAX(id)` per `user_id` is the latest snapshot**, not `MAX(audit_date)`.
-- Only accounts that joined inside the audited window and had not left by
-  the run are snapshotted.
+- Remaining joiners and administrator-removed joiners from the audited
+  window are snapshotted; ordinary self-leaves are recorded as events only.
 - `flagged` — Telegram's own label: `scam`, `fake`, or NULL.
 - `status` — `online`, `offline`, `recently`, `lastweek`, `lastmonth`, or
   NULL. `was_online` is set only when the account shows its exact last-seen
@@ -408,7 +408,7 @@ CREATE INDEX idx_subscriber_profiles_user ON subscriber_profiles(user_id);
   `score` their weighted sum. The signals and what they mean are in
   [analysis.md](analysis.md) — read that before quoting a score.
 
-Latest snapshot of every audited account still flagged:
+Latest snapshots with suspicion scores (including already removed accounts):
 
 ```sql
 SELECT p.user_id, p.name, p.username, p.score, p.signals, p.audit_date
@@ -666,3 +666,22 @@ FROM group_events e
 WHERE e.kind = 'join'
 GROUP BY hour ORDER BY hour;
 ```
+
+## `subscriber_bans` — moderation history
+
+```sql
+CREATE TABLE subscriber_bans (
+    user_id INTEGER PRIMARY KEY,
+    banned_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    profile_json TEXT
+);
+
+```
+
+One row per removed account, scoped to this channel. `source` is `tool` for a
+successful ban by our tool or `admin_log` for an observed administrator removal.
+The latter may be a kick: this records history, not current ban status or a bot
+verdict. `profile_json` holds the last successfully refreshed profile; failed
+refreshes retain it. Removed accounts remain comparison references after the
+admin-log window expires.

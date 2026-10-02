@@ -116,3 +116,10 @@ An audited account whose score reaches `possible` or `likely`. A suggestion
 for the channel owner to review, never a finding: only a human decides who is
 banned.
 _Avoid_: bot (as a label for an account the audit merely scored)
+
+
+**Removal reference**:
+A profile of an account previously removed from the channel, retained beyond
+the admin-log window and refreshed during each subscriber audit. A moderation
+record supplies comparison context, not a bot verdict; exact activity matches
+identify accounts to review together.

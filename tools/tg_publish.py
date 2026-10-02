@@ -243,7 +243,7 @@ def ban(
     try:
         accounts = prepare_ban(channel, user_id, data_dir(PROJECT_ROOT))
         require_session(session_file, LOGIN_COMMAND)
-        result = asyncio.run(ban_subscribers(channel, accounts, session_file))
+        result = asyncio.run(ban_subscribers(channel, accounts, session_file, data_dir(PROJECT_ROOT)))
     except SlopWriterError as exc:
         raise _fail(exc) from None
     print(summarize_ban(result.channel, result.banned, result.failed))

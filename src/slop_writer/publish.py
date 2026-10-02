@@ -47,8 +47,8 @@ from telethon.tl.functions.messages import (
     SendMultiMediaRequest,
 )
 
-from .audit import fetch_membership_log
-from .db import db_path_for
+from .audit import fetch_membership_log, record_ban
+from .db import db_path_for, open_db
 from .errors import SlopWriterError, UsageError
 from .markdown import render as render_markdown
 from .scheduled import get_scheduled_message
@@ -478,7 +478,7 @@ async def _input_users(client, entity, channel: str, ids: list[int]) -> dict:
 
 
 async def ban_subscribers_with_client(
-    client, entity, channel: str, accounts: list[dict]
+    client, entity, channel: str, accounts: list[dict], output_dir: Path
 ) -> BanResult:
     """Ban `accounts` (from `prepare_ban`) over a connected client.
 
@@ -510,11 +510,16 @@ async def ban_subscribers_with_client(
             continue
         log.info("banned %s from %s", account["user_id"], channel)
         banned.append(account)
+        conn = open_db(output_dir, channel)
+        try:
+            record_ban(conn, account["user_id"], datetime.now(UTC).isoformat(), "tool")
+        finally:
+            conn.close()
     return BanResult(channel, banned, failed)
 
 
 async def ban_subscribers(
-    channel: str, accounts: list[dict], session_file: str
+    channel: str, accounts: list[dict], session_file: str, output_dir: Path
 ) -> BanResult:
     async with channel_session(session_file, channel) as (client, entity):
-        return await ban_subscribers_with_client(client, entity, channel, accounts)
+        return await ban_subscribers_with_client(client, entity, channel, accounts, output_dir)

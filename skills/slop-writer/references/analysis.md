@@ -95,8 +95,9 @@ of the accumulated database; schema.md carries a query for each.
 ## Bot subscribers
 
 `audit_subscribers` reads the channel's admin log — the only place Telegram
-names who subscribed — and scores every account that joined and is still
-there. It needs admin rights, and the log keeps **about 48 hours**: run it
+names who subscribed — and scores recent joiners against each other and
+profiles of previously removed accounts. Already removed joiners appear in
+a separate section, so they remain visible when reviewing a wave. It needs admin rights, and the log keeps **about 48 hours**: run it
 while a suspicious wave is fresh, and on a regular cadence if the waves keep
 coming, since each run stores what it saw and a missed window is gone.
 
@@ -107,6 +108,7 @@ subscribers rarely do. **No single signal means bot.** Read them together:
 | --- | --- | --- |
 | `telegram_flag` | Telegram itself marked the account scam or fake | — it is Telegram's verdict |
 | `online_cluster` | last seen within minutes of two or more other joiners | the strongest one: a farm's script logs its accounts in together, people don't |
+| `known_pool_activity` | exact last-seen within five minutes of a previously removed account | a removal is moderation history, not proof of a bot |
 | `new_account` | registered recently, judged by the id | new people join Telegram every day |
 | `open_last_seen` | shows an exact last-seen time | many people never touch privacy settings |
 | `generated_username` | ends in `_` plus a short random tail with a digit | some people pick `ivan_1990` |
@@ -114,6 +116,14 @@ subscribers rarely do. **No single signal means bot.** Read them together:
 
 `likely` is a score of 4 or more, `possible` 2–3. A `deleted` account has no
 profile left to judge — it is neither clean nor a bot, only gone.
+
+Check the previous-removal comparison and matched account ids before judging
+an isolated joiner. Profiles are refreshed each run; unavailable references
+are reported and saved observations remain available. A ban or kick alone
+adds no suspicion points. Treat matches as evidence for review, and account
+for prior moderation mistakes. The audit covers recent joins, not every
+subscriber. Already removed accounts are historical context, not candidates
+to ban again.
 
 Beyond the table, look at the **shape of the wave**: several joiners with the
 same naming pattern (a first name plus an emoji), the same bio, joins spread

@@ -604,7 +604,8 @@ def build_server(project_root: Path) -> FastMCP:
             "Audit who subscribed to a channel lately: every join and leave in "
             "the channel's admin log, and a profile snapshot of each account "
             "that joined and is still subscribed, scored for bot-farm signals. "
-            "Stores both in the channel's database and returns the suspects "
+            "Stores both in the channel's database, compares with previous "
+            "removal profiles, reports already removed joiners separately, and returns the suspects "
             "ranked, with the `user_id` each ban takes.\n"
             "Requires ADMIN rights on the channel. Telegram keeps the admin "
             "log for about 48 hours, so one run sees only that window."
@@ -818,7 +819,7 @@ def build_server(project_root: Path) -> FastMCP:
         handle = normalize_channel(channel)
         accounts = prepare_ban(handle, user_ids, output_dir)
         _session()
-        result = await send_bans(handle, accounts, session_file)
+        result = await send_bans(handle, accounts, session_file, output_dir)
         return summarize_ban(result.channel, result.banned, result.failed)
 
     return mcp

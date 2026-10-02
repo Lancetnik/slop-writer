@@ -108,6 +108,13 @@ CREATE TABLE IF NOT EXISTS subscriber_events (
     PRIMARY KEY (id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS subscriber_bans (
+    user_id INTEGER PRIMARY KEY,
+    banned_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    profile_json TEXT
+);
+
 CREATE TABLE IF NOT EXISTS subscriber_profiles (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id       INTEGER NOT NULL,

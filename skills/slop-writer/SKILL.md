@@ -7,7 +7,7 @@ compatibility: >-
 license: Apache-2.0
 metadata:
   author: Lancetnik
-  version: "0.5.0"
+  version: "0.5.1"
 ---
 
 # Telegram channel analytics
@@ -27,7 +27,7 @@ question, and **what the answer means**.
 | the discussion under a channel's posts — comments, threads, joins and leaves | `scan_linked_group` | [analysis.md](references/analysis.md) |
 | a group that is nobody's comment section | `scan_standalone_group` | [analysis.md](references/analysis.md) |
 | where subscribers came from, and how many left | `fetch_subscribers` | [analysis.md](references/analysis.md) |
-| who subscribed lately, and whether they are bots | `audit_subscribers` | [analysis.md](references/analysis.md) |
+| who subscribed lately, whether they match previous removals, and who was already removed | `audit_subscribers` | [analysis.md](references/analysis.md) |
 | the best hour of day to publish | `fetch_views_by_hour` | [analysis.md](references/analysis.md) |
 | a number, a ranking, a comparison, a text search | `run_query` | [analysis.md](references/analysis.md), then [schema.md](references/schema.md) |
 | to see what is already queued to publish | `list_scheduled` | [publishing.md](references/publishing.md) |

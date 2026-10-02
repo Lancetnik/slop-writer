@@ -629,7 +629,8 @@ def _audit_table(accounts: list[dict]) -> list[str]:
         out.append(
             f"| {a['user_id']} | {_account_label(a)} "
             f"| {(a.get('joined') or '—')[:16].replace('T', ' ')} | {seen} "
-            f"| {a['score']} | {', '.join(a['signals']) or '—'} |"
+            f"| {a['score']} | {', '.join(a['signals']) or '—'}"
+            f"{(' (matches ' + ', '.join(map(str, a['matched_banned_ids'])) + ')') if a.get('matched_banned_ids') else ''} |"
         )
     return out
 
@@ -669,6 +670,12 @@ def summarize_audit(channel: str, overview: dict, accounts: list[dict]) -> str:
         ids = ", ".join(str(a["user_id"]) for a in tiers["deleted"])
         out.append(f"\n## Deleted accounts ({len(tiers['deleted'])})\n")
         out.append(f"No profile left to score: {ids}")
+    out.append(f"\n- Previous removal profiles compared: {overview.get('reference_count', 0)}")
+    if overview.get("unavailable_references"):
+        out.append("- Could not refresh reference profiles: " + ", ".join(map(str, overview["unavailable_references"])) + "; saved profiles used where available.")
+    if overview.get("removed_accounts"):
+        out.append("\n## Already removed from this wave\n")
+        out.extend(_audit_table(overview["removed_accounts"]))
     if not tiers["likely"] and not tiers["possible"]:
         out.append("\nNo joiner in this window shows enough signals to flag.")
     return "\n".join(out)
