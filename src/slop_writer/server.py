@@ -42,8 +42,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 from telethon.errors import FloodWaitError
@@ -319,13 +319,17 @@ def _guarded(
     the tail of the string rather than the whole of it. That prefix is the one
     concession — the JSON itself crosses verbatim.
 
+    The catch-all is load-bearing, not a courtesy: any exception that escapes
+    as something other than `ToolError` reaches the model as the bare
+    `Error executing tool <name>`, its message withheld by the SDK.
+
     Takes `output_dir` because two of the codes are answered by the
     *entrypoint* rather than by the domain that raised them: the setup pair
     with `slop-writer init`, and `CANNOT_RESOLVE` with the channels this
     project holds. Both are facts about where the server runs, which no raise
     site under `slop_writer` is allowed to know.
 
-    `functools.wraps` matters beyond tidiness: FastMCP derives the tool's
+    `functools.wraps` matters beyond tidiness: MCPServer derives the tool's
     input schema from `inspect.signature`, which follows `__wrapped__`."""
 
     def decorator(
@@ -377,14 +381,15 @@ def _guarded(
     return decorator
 
 
-async def assert_text_only(mcp: FastMCP) -> None:
-    """Refuse to serve if any tool carries an `outputSchema`.
+async def assert_text_only(mcp: MCPServer) -> None:
+    """Refuse to serve if any tool carries an `outputSchema` (`output_schema`
+    on the SDK's Python model).
 
     Belt to `_tool`'s braces. Annotating `-> str` is the obvious way to write a
     summary tool and silently switches the SDK to structured output, which
     Claude Code renders by *discarding the prose*. One forgotten flag would
     break one tool quietly, so the check runs at startup where it is loud."""
-    leaked = [t.name for t in await mcp.list_tools() if t.outputSchema is not None]
+    leaked = [t.name for t in await mcp.list_tools() if t.output_schema is not None]
     if leaked:
         raise RuntimeError(
             f"structured output leaked: {leaked} — register through `_tool`, "
@@ -392,27 +397,7 @@ async def assert_text_only(mcp: FastMCP) -> None:
         )
 
 
-def _complete_sdk_settings_model() -> None:
-    """Resolve the SDK's own `Settings` model before anything constructs it.
-
-    `mcp.server.fastmcp.server.Settings` leaves `lifespan`'s forward reference
-    unresolved, so pydantic-settings warns on every `FastMCP(...)` — every
-    server start — into the stderr our own log lines share. `model_rebuild()`
-    is what the warning asks for and leaves the class correctly defined, where
-    a `filterwarnings` would also hide the same warning about *our* models.
-
-    Best-effort: it reaches into another package's private shape, so a moved
-    class costs a noisy stderr, never a failed start. `mcp` 1.29 is the newest
-    release under the `<2` pin and still carries it."""
-    try:
-        from mcp.server.fastmcp.server import Settings
-
-        Settings.model_rebuild()
-    except Exception:  # pragma: no cover - cosmetic, never load-bearing
-        pass
-
-
-def build_server(project_root: Path) -> FastMCP:
+def build_server(project_root: Path) -> MCPServer:
     """The server for one project root.
 
     `project_root` is configuration, not an argument: the model never sees it
@@ -426,15 +411,9 @@ def build_server(project_root: Path) -> FastMCP:
     output_dir = data_dir(project_root)
     session_file = str(session_path(project_root))
 
-    _complete_sdk_settings_model()
-    mcp = FastMCP(name=SERVER_NAME)
-    # FastMCP takes no `version`, so `initialize` would otherwise answer with
-    # the SDK's — which is the wrong number to read off a bug report. Private
-    # attribute, hence the guard: a rename in the SDK costs us the version
-    # line, not the server.
-    server = getattr(mcp, "_mcp_server", None)
-    if server is not None:
-        server.version = __version__
+    # `version` is what `initialize` answers with; left unset, a bug report
+    # would carry no package version at all.
+    mcp = MCPServer(name=SERVER_NAME, version=__version__)
 
     def _tool(**kwargs):
         """The only registration path. Pins the two things a per-tool decision
@@ -447,17 +426,17 @@ def build_server(project_root: Path) -> FastMCP:
     def _session() -> None:
         require_session(session_file, "slop-writer init")
 
-    read_only = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
+    read_only = ToolAnnotations(read_only_hint=True, destructive_hint=False)
     # "Read" in this server means "does not write to Telegram". Scans do write
     # — to the local SQLite DB — so they are not readOnly, but they are
     # idempotent re-upserts, which is why #15 leaves them un-gated.
-    local_write = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
+    local_write = ToolAnnotations(read_only_hint=False, destructive_hint=False)
     # The Telegram writes. `publish_edit` is the destructive one: it discards
     # the body it replaces, while scheduling and rescheduling add or move.
     # Set for spec-correctness and relied on for nothing — #12 found the
     # annotations empirically inert; `permission_rules` is the actual gate.
-    telegram_write = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
-    telegram_overwrite = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+    telegram_write = ToolAnnotations(read_only_hint=False, destructive_hint=False)
+    telegram_overwrite = ToolAnnotations(read_only_hint=False, destructive_hint=True)
 
     @_tool(
         annotations=local_write,

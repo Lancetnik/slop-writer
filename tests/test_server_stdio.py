@@ -1,6 +1,6 @@
 """The contract as a client actually receives it — one real stdio session.
 
-`test_server.py` builds a `FastMCP` in-process and calls its tools directly.
+`test_server.py` builds an `MCPServer` in-process and calls its tools directly.
 That covers everything the server decides, and nothing the transport does:
 `isError`, `structuredContent`, `_meta`, the JSON-Schema `$defs` a client
 forwards to the model, and the version in the handshake are all produced on
@@ -145,11 +145,10 @@ def contract_of(text: str) -> dict | None:
 
 
 def test_the_handshake_names_the_server_and_this_package_version(wire):
-    """`FastMCP` takes no version, so `build_server` sets it through the SDK's
-    private `_mcp_server` — behind a `getattr` guard, which means an SDK rename
-    costs the version line silently and answers with the SDK's own instead.
-    This is the only place that would notice."""
-    info = wire.handshake.serverInfo
+    """`build_server` passes `version` to `MCPServer`; dropped, `initialize`
+    would answer with an empty version and a bug report would carry no
+    release. Only the handshake shows the number, so only this test notices."""
+    info = wire.handshake.server_info
     assert info.name == SERVER_NAME
     assert info.version == __version__
 
@@ -178,7 +177,7 @@ def test_no_tool_carries_an_output_schema_over_the_wire(wire):
     """#16: Claude Code discards the `content` blocks whenever structure is
     present. `_tool` pins `structured_output=False` and `assert_text_only`
     refuses to start otherwise — this is that promise as the client sees it."""
-    leaked = [name for name, t in wire.tools().items() if t.outputSchema is not None]
+    leaked = [name for name, t in wire.tools().items() if t.output_schema is not None]
     assert leaked == []
 
 
@@ -196,7 +195,7 @@ def test_the_nested_union_survives_serialization(wire):
     """#23 measured this against a live client and found the combinator crosses
     byte-for-byte *under a property*. `$defs`/`$ref` are the part a naive
     schema flattener would resolve away, taking the arm boundaries with it."""
-    schema = wire.tools()["scrape_posts"].inputSchema
+    schema = wire.tools()["scrape_posts"].input_schema
     select = schema["properties"]["select"]
     assert select["discriminator"]["propertyName"] == "mode"
     assert [arm["$ref"].rsplit("/", 1)[-1] for arm in select["oneOf"]] == [
@@ -216,8 +215,8 @@ def test_a_successful_call_is_text_and_only_text(wire):
     carries prose and `structuredContent` stays absent, so the client renders
     what the tool wrote instead of a table built from a schema."""
     result = wire.call("run_query", channel=SEEDED, queries=[{"sql": "SELECT 1 AS one"}])
-    assert result.isError is False
-    assert result.structuredContent is None
+    assert result.is_error is False
+    assert result.structured_content is None
     assert [block.type for block in result.content] == ["text"]
     assert "one" in text_of(result)
 
@@ -227,8 +226,8 @@ def test_a_failure_is_the_contract_inside_the_text_block(wire):
     because structure would cost the message. The database for this channel
     was never created, which is the failure a first turn actually hits."""
     result = wire.call("run_query", channel=UNSCRAPED, queries=[{"sql": "SELECT 1"}])
-    assert result.isError is True
-    assert result.structuredContent is None
+    assert result.is_error is True
+    assert result.structured_content is None
 
     text = text_of(result)
     # The payload is the *tail*: the SDK writes its own prose in front of it.
@@ -249,8 +248,8 @@ def test_a_rejected_query_is_a_section_not_a_call_failure(wire):
     call itself refusing — the test above, where there is no database to look
     in — so the two are visible here as different results of the same tool."""
     result = wire.call("run_query", channel=SEEDED, queries=[{"sql": "DROP TABLE posts"}])
-    assert result.isError is False
-    assert result.structuredContent is None
+    assert result.is_error is False
+    assert result.structured_content is None
     assert "**failed** (QUERY_REJECTED)" in text_of(result)
 
 
@@ -259,7 +258,7 @@ def test_a_setup_failure_carries_the_servers_own_remedy(wire):
     hint has to name `slop-writer init` — the CLI's setup skill is the wrong
     remedy here and the model cannot run a TTY login either way."""
     result = wire.call("list_scheduled", channel=SEEDED)
-    assert result.isError is True
+    assert result.is_error is True
     payload = contract_of(text_of(result))
     assert payload["code"] in {"NO_SESSION", "NO_CREDENTIALS"}
     assert "slop-writer init" in payload["hint"]
@@ -277,5 +276,5 @@ def test_a_malformed_selection_arm_escapes_the_contract(wire):
         "scrape_posts", channel=SEEDED,
         select={"mode": "latest", "offset_id": 100},
     )
-    assert result.isError is True
+    assert result.is_error is True
     assert contract_of(text_of(result)) is None

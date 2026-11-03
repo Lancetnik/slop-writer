@@ -30,13 +30,14 @@ classifiers = [
 # the rule is that whoever decides the project root populates the environment,
 # and `serve` is now one of those callers. `tg.py` still only reads os.environ.
 #
-# `mcp` is pinned below 2: `structured_output=False` is probed and depended on
-# in that line (#16), and v2 moved FastMCP to `mcp.server.mcpserver.MCPServer`
-# with unverified kwargs.
+# `mcp` is the v2 line: the server is built on `mcp.server.mcpserver.MCPServer`
+# (v1's FastMCP is gone in 2), `structured_output=False` is load-bearing (#16),
+# and the cap is there because a major is exactly what moved the class last time.
+# The floor is the release the suite runs against.
 dependencies = [
     "telethon>=1.36,<2",
     "mistune>=3.0",
-    "mcp>=1.10,<2",
+    "mcp>=2.3.0,<3",
     "python-dotenv>=1.0",
 ]
 
