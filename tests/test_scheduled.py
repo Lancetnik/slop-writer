@@ -5,7 +5,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from telethon.errors import MediaCaptionTooLongError
 from telethon.tl.functions.messages import EditMessageRequest
 from telethon.tl.types import InputPeerChannel
@@ -18,7 +18,7 @@ from .factories import msg, photo
 
 
 def call(server, name, **arguments):
-    blocks = run(server.call_tool(name, arguments))
+    blocks = run(server.call_tool(name, arguments)).content
     return "\n".join(block.text for block in blocks)
 
 

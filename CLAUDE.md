@@ -188,6 +188,9 @@ inputs. `--caption-above` rides an `invert_media` monkey patch.
 
 ## Gotchas
 
+- The `mcp` SDK's Python models are snake_case (`input_schema`, `is_error`,
+  `read_only_hint`) while the wire stays camelCase — prose naming a protocol
+  field uses the wire name, code uses the attribute.
 - Telethon TL types are generated dynamically, so Pyright flags `.sender`,
   `.chats`, `.full_chat`, `.forwards` as unknown attributes throughout —
   expected noise, not real errors.
@@ -202,8 +205,9 @@ inputs. `--caption-above` rides an `invert_media` monkey patch.
   source, several destinations**: a project holds the skill under
   `.claude/skills/` *and* `.agents/skills/`, so "one directory" is now true of
   the source only (adr/0009).
-- Pins that carry a reason: `mcp>=1.10,<2` (`structured_output=False` is
-  load-bearing and v2 moved `FastMCP`), `telethon>=1.36,<2` (client API, not the
+- Pins that carry a reason: `mcp>=2.3.0,<3` (`MCPServer` from
+  `mcp.server.mcpserver`, `structured_output=False` is load-bearing; the floor
+  is the release the suite runs against), `telethon>=1.36,<2` (client API, not the
   bot API).
 
 <!-- slop-writer:start -->

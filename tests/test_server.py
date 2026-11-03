@@ -1,6 +1,6 @@
 """The MCP surface: the roster, the write gate, and the error contract.
 
-Everything here builds a real `FastMCP` over a `tmp_path` project root and
+Everything here builds a real `MCPServer` over a `tmp_path` project root and
 asks it questions. Nothing touches Telegram: the two write paths reachable
 without a session are the ones this suite drives, and they are exactly the
 ones worth pinning — a validation failure that slipped past `_guarded`, or a
@@ -25,7 +25,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from telethon.errors import FloodWaitError
 
 from slop_writer.db import data_dir
@@ -73,7 +73,7 @@ def tools(server):
 
 def call(server, name: str, **arguments) -> str:
     """One tool call, rendered the way the client renders it."""
-    blocks = run(server.call_tool(name, arguments))
+    blocks = run(server.call_tool(name, arguments)).content
     return "\n".join(b.text for b in blocks)
 
 
@@ -114,7 +114,7 @@ def test_the_roster_is_the_read_tools_and_the_write_tools(tools):
 def test_no_tool_carries_an_output_schema(server, tools):
     """`assert_text_only` is the startup guard; this is the same check where a
     failure names the offending tool at development time instead of at boot."""
-    assert [name for name, t in tools.items() if t.outputSchema is not None] == []
+    assert [name for name, t in tools.items() if t.output_schema is not None] == []
     run(assert_text_only(server))
 
 
@@ -158,7 +158,7 @@ def test_channel_is_required_on_every_tool(tools):
     `scan_standalone_group` is the one exception in name only — its target is
     a group, and it says so."""
     for name, tool in tools.items():
-        required = tool.inputSchema.get("required", [])
+        required = tool.input_schema.get("required", [])
         handle = "group" if name == "scan_standalone_group" else "channel"
         assert handle in required, name
 
@@ -167,7 +167,7 @@ def test_no_tool_exposes_a_filesystem_path_for_state(tools):
     """`--output-dir`/`--session-file` are server configuration. `photo_paths`
     is the deliberate exception, and a recorded service-migration seam (#15)."""
     for name, tool in tools.items():
-        leaked = set(tool.inputSchema.get("properties", {})) & {
+        leaked = set(tool.input_schema.get("properties", {})) & {
             "output_dir", "session_file", "project", "project_root"
         }
         assert not leaked, f"{name} exposes {leaked}"
@@ -247,14 +247,14 @@ def test_codex_approval_rules_cannot_be_mutated_between_callers():
 
 def test_a_telegram_write_is_never_annotated_read_only(tools):
     for name in WRITE_TOOLS:
-        assert tools[name].annotations.readOnlyHint is False
+        assert tools[name].annotations.read_only_hint is False
 
 
 def test_replacing_a_body_and_banning_are_the_destructive_ones(tools):
     """Scheduling adds and rescheduling moves; `publish_edit` discards
     something a human may have written, and a ban removes a subscriber."""
     destructive = {
-        name for name in WRITE_TOOLS if tools[name].annotations.destructiveHint
+        name for name in WRITE_TOOLS if tools[name].annotations.destructive_hint
     }
     assert destructive == {"publish_edit", "publish_ban_subscribers"}
 
@@ -610,7 +610,7 @@ def test_the_selection_union_reaches_the_model_nested(tools):
     """#23 measured it: a combinator under a property crosses byte-for-byte,
     while one at the root of `inputSchema` is flattened into a property bag
     with the arm-level `required` discarded. So `select` stays an object."""
-    schema = tools["scrape_posts"].inputSchema
+    schema = tools["scrape_posts"].input_schema
     assert "select" in schema["properties"]
     assert schema.get("$defs", {}).keys() >= {"LatestSelect", "WindowSelect"}
     for arm in ("LatestSelect", "WindowSelect"):
@@ -622,7 +622,7 @@ def test_the_union_crosses_as_a_combinator_with_its_tag(tools):
     `$ref` arms plus a `discriminator` naming `mode`. A model that has to guess
     which arm it is filling is the failure this buys off — and the arms are
     told apart by nothing else, since `mode` is the only field they share."""
-    select = tools["scrape_posts"].inputSchema["properties"]["select"]
+    select = tools["scrape_posts"].input_schema["properties"]["select"]
     assert select["discriminator"]["propertyName"] == "mode"
     assert [arm["$ref"].rsplit("/", 1)[-1] for arm in select["oneOf"]] == [
         "LatestSelect", "WindowSelect"
@@ -633,7 +633,7 @@ def test_the_window_arm_must_say_so_and_the_default_arm_need_not(tools):
     """`mode` is required on `WindowSelect` and defaulted on `LatestSelect`, so
     an omitted tag reads as `latest` — which is also what an omitted `select`
     means. Two ways to say the common thing, one way to say the rare one."""
-    defs = tools["scrape_posts"].inputSchema["$defs"]
+    defs = tools["scrape_posts"].input_schema["$defs"]
     assert defs["WindowSelect"]["required"] == ["mode"]
     assert "required" not in defs["LatestSelect"]
 
@@ -643,7 +643,7 @@ def test_selecting_a_window_is_optional_on_every_tool_that_takes_one(tools):
     bias the CLI had, and requiring the argument would push the model into
     writing a window by hand."""
     for name, tool in tools.items():
-        schema = tool.inputSchema
+        schema = tool.input_schema
         if "select" in schema.get("properties", {}):
             assert "select" not in schema.get("required", []), name
 
@@ -651,5 +651,5 @@ def test_selecting_a_window_is_optional_on_every_tool_that_takes_one(tools):
 def test_the_rendered_row_cap_is_bounded_in_the_schema(tools):
     """`truncate_cells=false` with an unbounded limit is how the 25,000-token
     output cap gets hit."""
-    limit = tools["run_query"].inputSchema["properties"]["limit"]
+    limit = tools["run_query"].input_schema["properties"]["limit"]
     assert limit["maximum"] == 500
