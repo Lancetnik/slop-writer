@@ -51,7 +51,7 @@ Issues = "https://github.com/Lancetnik/slop-writer/issues"
 slop-writer = "slop_writer.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.12.3,<0.13.0"]
+requires = ["uv_build>=0.12.3,<0.14.0"]
 build-backend = "uv_build"
 
 # PEP 735, not [project.optional-dependencies]: a dependency group is a
@@ -59,7 +59,7 @@ build-backend = "uv_build"
 # so pytest cannot reach a user who installs `slop-writer`. An extra would.
 # CI asserts this against the built wheel rather than trusting the claim.
 [dependency-groups]
-dev = ["pytest>=8,<9"]
+dev = ["pytest>=8,<10"]
 
 [tool.pytest.ini_options]
 # The suite must exercise *this checkout*, never the released package — the
